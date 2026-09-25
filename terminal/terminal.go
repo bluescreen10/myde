@@ -230,6 +230,7 @@ const (
 	KeyEnd
 	KeyPageUp
 	KeyPageDown
+	KeyIgnored
 )
 
 // Event is one decoded keyboard event.
@@ -302,7 +303,7 @@ func (r *Reader) readEscape() (Event, error) {
 	}
 
 	var sequence strings.Builder
-	for sequence.Len() < 8 {
+	for sequence.Len() < 64 {
 		value, readErr := r.input.ReadByte()
 		if readErr != nil {
 			return Event{}, readErr
@@ -352,24 +353,32 @@ func modifiedKeyEvent(sequence string) Event {
 	fields := strings.Split(trimmed, ";")
 	codepoint := 0
 	modifier := 1
+	eventType := 1
+	if len(fields) >= 2 {
+		modifier = csiParameter(fields[1])
+		eventType = csiSubparameter(fields[1], 1, eventType)
+	}
+	if eventType == 3 {
+		return Event{Key: KeyIgnored}
+	}
 	if terminator == 'u' && len(fields) >= 1 {
-		codepoint, _ = strconv.Atoi(fields[0])
-		if len(fields) >= 2 {
-			modifier, _ = strconv.Atoi(fields[1])
-		}
+		codepoint = csiParameter(fields[0])
 	} else if terminator == '~' && len(fields) == 3 && fields[0] == "27" {
-		modifier, _ = strconv.Atoi(fields[1])
-		codepoint, _ = strconv.Atoi(fields[2])
+		codepoint = csiParameter(fields[2])
 	} else if strings.ContainsRune("ABCDHF", rune(terminator)) {
-		if len(fields) >= 2 {
-			modifier, _ = strconv.Atoi(fields[len(fields)-1])
-		}
 		key := map[byte]Key{'A': KeyUp, 'B': KeyDown, 'C': KeyRight, 'D': KeyLeft, 'H': KeyHome, 'F': KeyEnd}[terminator]
 		bits := modifier - 1
 		return eventWithModifiers(key, 0, bits)
 	}
 	if codepoint == 0 || modifier == 0 {
 		return Event{Key: KeyEscape}
+	}
+	// Kitty assigns this contiguous range to modifier keys. They describe
+	// keyboard state and must never become buffer text.
+	const kittyLeftShift = 57441
+	const kittyISOLevel5Shift = 57454
+	if codepoint >= kittyLeftShift && codepoint <= kittyISOLevel5Shift {
+		return Event{Key: KeyIgnored}
 	}
 	bits := modifier - 1
 	if bits == 0 {
@@ -387,6 +396,24 @@ func modifiedKeyEvent(sequence string) Event {
 	return eventWithModifiers(KeyRune, rune(codepoint), bits)
 }
 
+func csiParameter(field string) int {
+	value, _, _ := strings.Cut(field, ":")
+	number, _ := strconv.Atoi(value)
+	return number
+}
+
+func csiSubparameter(field string, index, fallback int) int {
+	values := strings.Split(field, ":")
+	if index >= len(values) {
+		return fallback
+	}
+	number, err := strconv.Atoi(values[index])
+	if err != nil {
+		return fallback
+	}
+	return number
+}
+
 func eventWithModifiers(key Key, value rune, bits int) Event {
 	return Event{
 		Key:     key,
@@ -394,7 +421,7 @@ func eventWithModifiers(key Key, value rune, bits int) Event {
 		Shift:   bits&1 != 0,
 		Alt:     bits&2 != 0,
 		Control: bits&4 != 0,
-		Super:   bits&8 != 0,
+		Super:   bits&(8|16|32) != 0,
 	}
 }
 
@@ -468,7 +495,9 @@ func (s *Session) Resume() error {
 		return err
 	}
 	s.state = state
-	if _, err := s.output.WriteString("\x1b[?1049h\x1b[>1u\x1b[?25h\x1b[2J"); err != nil {
+	// Mode 7 disambiguates keys and reports event types and alternate keys. This
+	// matches modern TUIs while leaving ordinary text as plain UTF-8.
+	if _, err := s.output.WriteString("\x1b[?1049h\x1b[>7u\x1b[?25h\x1b[2J"); err != nil {
 		_ = restore(s.input.Fd(), state)
 		return fmt.Errorf("enter terminal screen: %w", err)
 	}

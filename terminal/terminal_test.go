@@ -91,13 +91,75 @@ func TestReaderDecodesShiftArrow(t *testing.T) {
 }
 
 func TestReaderDecodesSuperArrow(t *testing.T) {
-	reader := terminal.NewReader(bytes.NewBufferString("\x1b[1;9C"))
+	tests := []struct {
+		sequence string
+		key      terminal.Key
+	}{
+		{sequence: "\x1b[1;9A", key: terminal.KeyUp},
+		{sequence: "\x1b[1;9B", key: terminal.KeyDown},
+		{sequence: "\x1b[1;9C", key: terminal.KeyRight},
+		{sequence: "\x1b[1;9D", key: terminal.KeyLeft},
+		{sequence: "\x1b[1;9:1A", key: terminal.KeyUp},
+		{sequence: "\x1b[1;9:2B", key: terminal.KeyDown},
+		{sequence: "\x1b[1;17C", key: terminal.KeyRight},
+		{sequence: "\x1b[1;33D", key: terminal.KeyLeft},
+	}
+	for _, test := range tests {
+		reader := terminal.NewReader(bytes.NewBufferString(test.sequence))
+		event, err := reader.ReadEvent()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Key != test.key || !event.Super || event.Shift || event.Alt || event.Control {
+			t.Fatalf("ReadEvent(%q) = %+v, want Super modifier and key %v", test.sequence, event, test.key)
+		}
+	}
+}
+
+func TestReaderDecodesReportAllRune(t *testing.T) {
+	reader := terminal.NewReader(bytes.NewBufferString("\x1b[97u"))
 	event, err := reader.ReadEvent()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event.Key != terminal.KeyRight || !event.Super || event.Shift || event.Alt || event.Control {
-		t.Fatalf("ReadEvent() = %+v, want Super-Right", event)
+	if event.Key != terminal.KeyRune || event.Rune != 'a' ||
+		event.Super || event.Shift || event.Alt || event.Control {
+		t.Fatalf("ReadEvent() = %+v, want unmodified a", event)
+	}
+}
+
+func TestReaderIgnoresKittyModifierKeys(t *testing.T) {
+	for _, codepoint := range []string{"57441", "57447", "57454"} {
+		reader := terminal.NewReader(bytes.NewBufferString("\x1b[" + codepoint + ";2:1u"))
+		event, err := reader.ReadEvent()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Key != terminal.KeyIgnored || event.Rune != 0 {
+			t.Errorf("ReadEvent(%s) = %+v, want ignored key", codepoint, event)
+		}
+	}
+}
+
+func TestReaderIgnoresKittyReleaseEvent(t *testing.T) {
+	reader := terminal.NewReader(bytes.NewBufferString("\x1b[1;9:3A"))
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Key != terminal.KeyIgnored {
+		t.Fatalf("ReadEvent() = %+v, want ignored key", event)
+	}
+}
+
+func TestReaderDecodesKittyAlternateKeyFields(t *testing.T) {
+	reader := terminal.NewReader(bytes.NewBufferString("\x1b[97:65;2:1u"))
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Key != terminal.KeyRune || event.Rune != 'a' || !event.Shift {
+		t.Fatalf("ReadEvent() = %+v, want Shift-A key event", event)
 	}
 }
 

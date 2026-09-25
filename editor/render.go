@@ -95,8 +95,7 @@ func (a *App) renderFiles(statusRow int) int {
 		return 0
 	}
 	width, _ := a.screen.Size()
-	sidebarWidth := min(42, max(24, width/3))
-	sidebarWidth = min(sidebarWidth, max(12, width-20))
+	sidebarWidth := fileSidebarWidth(width)
 	panelHeight := statusRow - 1
 	if panelHeight < 2 {
 		return sidebarWidth
@@ -170,6 +169,11 @@ func (a *App) renderFiles(statusRow int) int {
 	}
 	drawStyledText(a.screen, 2, footerSeparator+1, sidebarWidth-4, help)
 	return sidebarWidth
+}
+
+func fileSidebarWidth(width int) int {
+	sidebarWidth := min(42, max(24, width/3))
+	return min(sidebarWidth, max(12, width-20))
 }
 
 func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {

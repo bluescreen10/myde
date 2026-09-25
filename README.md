@@ -35,7 +35,8 @@ processes.
 | `C-q` | quit; modified buffers offer Save All, Discard All, or Cancel |
 | `C-1` … `C-9` | switch directly to buffer 1 … 9 |
 | `Shift-Arrow` | extend the text selection |
-| `Cmd-Left` / `Cmd-Right` | beginning / end of line on terminals that forward the Super modifier |
+| `Cmd-Left` / `Cmd-Right` | beginning / end of line |
+| `Cmd-Up` / `Cmd-Down` | beginning / end of file |
 | `M-j` | add a cursor on the next line |
 | `M-f` | open, focus, or hide the file explorer |
 | `M-.` | go to definition through the active language server |
@@ -43,7 +44,8 @@ processes.
 
 Arrow, Home, End, Page Up, Page Down, Backspace, Delete, Enter, and Tab work in
 the editing area. Shift with navigation extends a selection; typing replaces
-selected text. Typing filters every command palette with fuzzy matching. `Escape`
+selected text. Undo groups consecutively typed words instead of removing one
+character at a time. Typing filters every command palette with fuzzy matching. `Escape`
 cancels the current panel, prompt, key sequence, or action. Saving an unnamed
 buffer opens its filename prompt in the minibuffer below the modeline.
 Closing a modified file opens a Save, Discard, or Cancel confirmation; quitting
@@ -51,6 +53,21 @@ with modified buffers opens a Save All, Discard All, or Cancel confirmation.
 Clean new buffers close immediately without being treated as modified.
 Control-number switching uses the CSI-u keyboard protocol requested by myde;
 `M-1` through `M-9` provide the same bindings on older terminals.
+
+Ghostty translates `Cmd-Left` and `Cmd-Right` to `C-a` and `C-e`; myde accepts
+both forms. It also negotiates enhanced keyboard reporting for modified arrows,
+including Kitty protocol event-type and alternate-key fields.
+
+Ghostty's default `Cmd-Up` and `Cmd-Down` actions do not send input to terminal
+programs. To use those keys in myde, map them to their CSI-u representations in
+the Ghostty configuration:
+
+```ini
+keybind = super+arrow_up=csi:1;9A
+keybind = super+arrow_down=csi:1;9B
+keybind = super+shift+arrow_up=csi:1;10A
+keybind = super+shift+arrow_down=csi:1;10B
+```
 
 The file explorer is a navigable tree on the left. Type while it is focused to
 filter paths, use Up/Down to select entries, Left/Right to collapse or expand

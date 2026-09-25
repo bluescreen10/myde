@@ -22,6 +22,10 @@ func (a *App) registerCommands() {
 		"command.palette":         a.commandPalette,
 		"completion.show":         a.showCompletion,
 		"cursor.add-below":        a.addCursorBelow,
+		"cursor.file-end":         a.moveToFileEnd,
+		"cursor.file-start":       a.moveToFileStart,
+		"cursor.line-end":         a.moveToLineEnd,
+		"cursor.line-start":       a.moveToLineStart,
 		"debug.continue":          a.debugContinue,
 		"debug.disconnect":        a.debugDisconnect,
 		"debug.launch":            a.debugLaunch,
@@ -458,6 +462,30 @@ func (a *App) addCursorBelow(arguments string) error {
 	cursors = append(cursors, buffer.Cursor{Anchor: point, Point: point})
 	current.SetCursors(cursors)
 	a.message = fmt.Sprintf("%d cursors", len(cursors))
+	return nil
+}
+
+func (a *App) moveToLineStart(arguments string) error {
+	a.moveLineEdge(false, arguments == "select")
+	a.ensureCursorVisible()
+	return nil
+}
+
+func (a *App) moveToLineEnd(arguments string) error {
+	a.moveLineEdge(true, arguments == "select")
+	a.ensureCursorVisible()
+	return nil
+}
+
+func (a *App) moveToFileStart(arguments string) error {
+	a.moveDocumentEdge(false, arguments == "select")
+	a.ensureCursorVisible()
+	return nil
+}
+
+func (a *App) moveToFileEnd(arguments string) error {
+	a.moveDocumentEdge(true, arguments == "select")
+	a.ensureCursorVisible()
 	return nil
 }
 

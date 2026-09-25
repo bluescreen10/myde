@@ -127,6 +127,32 @@ func TestUndoRedoTransaction(t *testing.T) {
 	}
 }
 
+func TestMergeNextEditGroup(t *testing.T) {
+	b := buffer.New()
+	b.Insert(0, []byte("h"))
+	b.MergeNextEditGroup()
+	b.Insert(1, []byte("ello"))
+
+	if !b.Undo() {
+		t.Fatal("Undo() = false, want true")
+	}
+	if got := string(b.Bytes()); got != "" {
+		t.Fatalf("after Undo() = %q, want empty", got)
+	}
+	if b.IsDirty() {
+		t.Fatal("buffer is dirty after undoing merged edit group")
+	}
+	if !b.Redo() {
+		t.Fatal("Redo() = false, want true")
+	}
+	if got := string(b.Bytes()); got != "hello" {
+		t.Fatalf("after Redo() = %q, want hello", got)
+	}
+	if !b.IsDirty() {
+		t.Fatal("buffer is clean after redoing merged edit group")
+	}
+}
+
 func TestUndoRestoresSavedState(t *testing.T) {
 	b := buffer.New()
 	b.Insert(0, []byte("saved"))

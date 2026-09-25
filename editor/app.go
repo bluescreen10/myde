@@ -78,6 +78,8 @@ type App struct {
 	prefix          bool
 	running         bool
 	completionEpoch uint64
+	typingBuffer    *buffer.Buffer
+	typingKind      typingGroup
 
 	lsp                  *protocol.Process
 	lspCancel            context.CancelFunc
@@ -366,6 +368,9 @@ func defaultBindings() map[string]string {
 }
 
 func (a *App) handleEvent(event terminal.Event) error {
+	if !a.isTypingEvent(event) {
+		a.finishTypingGroup()
+	}
 	if event.Key == terminal.KeyEscape {
 		if a.palette == nil && a.minibuffer == nil && a.browser.focused {
 			a.closeFileBrowser()
@@ -383,11 +388,6 @@ func (a *App) handleEvent(event terminal.Event) error {
 			return a.handleCompletionEvent(event)
 		}
 		return a.handlePaletteEvent(event)
-	}
-	if event.Super && (event.Key == terminal.KeyLeft || event.Key == terminal.KeyRight) {
-		a.moveLineEdge(event.Key == terminal.KeyRight, event.Shift)
-		a.ensureCursorVisible()
-		return nil
 	}
 	key := keyName(event)
 	if a.prefix {
@@ -418,6 +418,25 @@ func (a *App) handleEvent(event terminal.Event) error {
 	if a.showFiles && a.browser.focused {
 		return a.handleFileBrowserEvent(event)
 	}
+	if event.Super {
+		switch event.Key {
+		case terminal.KeyUp:
+			a.moveDocumentEdge(false, event.Shift)
+		case terminal.KeyDown:
+			a.moveDocumentEdge(true, event.Shift)
+		case terminal.KeyLeft:
+			a.moveLineEdge(false, event.Shift)
+		case terminal.KeyRight:
+			a.moveLineEdge(true, event.Shift)
+		default:
+			break
+		}
+		if event.Key == terminal.KeyUp || event.Key == terminal.KeyDown ||
+			event.Key == terminal.KeyLeft || event.Key == terminal.KeyRight {
+			a.ensureCursorVisible()
+			return nil
+		}
+	}
 	if terminalBuffer := a.terminals[a.current()]; terminalBuffer != nil {
 		return a.handleTerminalEvent(event, terminalBuffer)
 	}
@@ -426,7 +445,7 @@ func (a *App) handleEvent(event terminal.Event) error {
 		if event.Control || event.Alt || event.Super || event.Rune == 0 {
 			return nil
 		}
-		a.insert([]byte(string(event.Rune)))
+		a.insertTyped(event.Rune)
 		if isCompletionRune(event.Rune) && strings.EqualFold(filepath.Ext(a.current().Path()), ".go") {
 			a.requestLSPCompletion()
 		}
@@ -490,6 +509,54 @@ type edit struct {
 	start  int
 	end    int
 	text   []byte
+}
+
+type typingGroup uint8
+
+const (
+	typingWord typingGroup = iota + 1
+	typingWhitespace
+	typingPunctuation
+)
+
+func (a *App) isTypingEvent(event terminal.Event) bool {
+	if event.Key != terminal.KeyRune || event.Control || event.Alt || event.Super || event.Rune == 0 {
+		return false
+	}
+	if a.prefix || a.minibuffer != nil || (a.palette != nil && !a.palette.completion) {
+		return false
+	}
+	if a.showFiles && a.browser.focused || a.terminals[a.current()] != nil {
+		return false
+	}
+	return a.bindings[keyName(event)] == ""
+}
+
+func (a *App) insertTyped(value rune) {
+	current := a.current()
+	kind := typingGroupForRune(value)
+	if a.typingBuffer == current && a.typingKind == kind {
+		current.MergeNextEditGroup()
+	} else {
+		a.typingBuffer = current
+		a.typingKind = kind
+	}
+	a.insert([]byte(string(value)))
+}
+
+func (a *App) finishTypingGroup() {
+	a.typingBuffer = nil
+	a.typingKind = 0
+}
+
+func typingGroupForRune(value rune) typingGroup {
+	if unicode.IsLetter(value) || unicode.IsNumber(value) || unicode.IsMark(value) || value == '_' {
+		return typingWord
+	}
+	if unicode.IsSpace(value) {
+		return typingWhitespace
+	}
+	return typingPunctuation
 }
 
 func (a *App) insert(text []byte) {
@@ -644,8 +711,25 @@ func (a *App) moveLineEdge(end, extend bool) {
 	current.SetCursors(cursors)
 }
 
+func (a *App) moveDocumentEdge(end, extend bool) {
+	current := a.current()
+	cursors := current.Cursors()
+	for index, cursor := range cursors {
+		point := buffer.Point{}
+		if end {
+			point = current.Point(current.Len())
+		}
+		anchor := point
+		if extend {
+			anchor = cursor.Anchor
+		}
+		cursors[index] = buffer.Cursor{Anchor: anchor, Point: point}
+	}
+	current.SetCursors(cursors)
+}
+
 func (a *App) ensureCursorVisible() {
-	_, height := a.screen.Size()
+	width, height := a.screen.Size()
 	statusRow := height - 1
 	if a.minibuffer != nil {
 		statusRow--
@@ -658,8 +742,20 @@ func (a *App) ensureCursorVisible() {
 	if point.Line >= a.topLine+bodyHeight {
 		a.topLine = point.Line - bodyHeight + 1
 	}
-	if point.Column < a.leftColumn {
-		a.leftColumn = point.Column
+	sidebarWidth := 0
+	if a.showFiles {
+		sidebarWidth = fileSidebarWidth(width)
+	}
+	lineNumberWidth := len(strconv.Itoa(max(1, a.current().LineCount()))) + 2
+	available := max(1, width-sidebarWidth-lineNumberWidth)
+	line := []rune(string(a.current().Line(point.Line)))
+	column := min(point.Column, len(line))
+	displayColumn := sourceDisplayWidth(line[:column])
+	if displayColumn < a.leftColumn {
+		a.leftColumn = displayColumn
+	}
+	if displayColumn >= a.leftColumn+available {
+		a.leftColumn = displayColumn - available + 1
 	}
 }
 

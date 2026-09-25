@@ -74,6 +74,7 @@ type Buffer struct {
 	historyLimit     int
 	transactionDepth int
 	pendingChanges   []historyChange
+	mergeNextGroup   bool
 }
 
 // New returns an empty, unnamed buffer.
@@ -301,6 +302,14 @@ func (b *Buffer) EndTransaction() {
 	}
 }
 
+// MergeNextEditGroup folds the next completed edit group into the current undo entry.
+func (b *Buffer) MergeNextEditGroup() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.mergeNextGroup = true
+}
+
 // SetHistoryLimit sets the maximum undo entries. Zero disables history.
 func (b *Buffer) SetHistoryLimit(entries int) {
 	b.mu.Lock()
@@ -329,6 +338,7 @@ func (b *Buffer) Undo() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	b.mergeNextGroup = false
 	if b.transactionDepth != 0 || b.historyIndex == 0 {
 		return false
 	}
@@ -349,6 +359,7 @@ func (b *Buffer) Redo() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	b.mergeNextGroup = false
 	if b.transactionDepth != 0 || b.historyIndex >= len(b.history) {
 		return false
 	}
@@ -537,6 +548,7 @@ func (b *Buffer) Reload() error {
 	b.historyIndex = 0
 	b.pendingChanges = nil
 	b.transactionDepth = 0
+	b.mergeNextGroup = false
 	b.lineStarts = nil
 	return nil
 }
@@ -587,7 +599,17 @@ func (b *Buffer) recordChangeLocked(change historyChange) {
 }
 
 func (b *Buffer) commitHistoryLocked(changes []historyChange) {
+	merge := b.mergeNextGroup
+	b.mergeNextGroup = false
 	if len(changes) == 0 {
+		return
+	}
+	if merge && b.historyLimit > 0 && b.historyIndex == len(b.history) && b.historyIndex > 0 {
+		b.nextState++
+		entry := &b.history[b.historyIndex-1]
+		entry.changes = append(entry.changes, changes...)
+		entry.afterState = b.nextState
+		b.state = entry.afterState
 		return
 	}
 	if b.historyIndex < len(b.history) {
