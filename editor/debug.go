@@ -4,14 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"sort"
 	"time"
 
+	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/protocol"
 )
 
 func (a *App) debugStart(arguments string) error {
 	if arguments == "" {
+		mode := a.modeForBuffer(a.current())
+		if mode.DebugAdapter.Program.Command != "" {
+			return a.startDebugAdapter(mode.DebugAdapter, a.currentEditorBuffer().mode)
+		}
 		a.prompt("Debug adapter command", func(command string) {
 			if err := a.debugStart(command); err != nil {
 				a.message = err.Error()
@@ -23,17 +29,35 @@ func (a *App) debugStart(arguments string) error {
 	if err != nil {
 		return err
 	}
+	return a.startDebugAdapter(plugin.DebugAdapter{
+		Program: plugin.Program{Command: command, Arguments: commandArguments},
+	}, a.currentEditorBuffer().mode)
+}
+
+func (a *App) startDebugAdapter(configuration plugin.DebugAdapter, mode string) error {
+	command, err := exec.LookPath(configuration.Program.Command)
+	if err != nil {
+		return fmt.Errorf("find %s: %w", configuration.Program.Command, err)
+	}
 	if a.dapCancel != nil {
 		a.dapCancel()
 	}
+	a.dap = nil
+	a.dapMode = ""
 	ctx, cancel := context.WithCancel(context.Background())
-	adapter, err := protocol.StartDebug(ctx, command, commandArguments...)
+	var adapter *protocol.DebugProcess
+	if configuration.Transport == plugin.DebugReverseTCP {
+		adapter, err = protocol.StartDebugReverse(ctx, command, configuration.Program.Arguments...)
+	} else {
+		adapter, err = protocol.StartDebug(ctx, command, configuration.Program.Arguments...)
+	}
 	if err != nil {
 		cancel()
 		return err
 	}
 	a.dap = adapter
 	a.dapCancel = cancel
+	a.dapMode = mode
 	requestContext, requestCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer requestCancel()
 	err = adapter.Request(requestContext, "initialize", map[string]any{
@@ -83,16 +107,14 @@ func (a *App) debugToggleBreakpoint(arguments string) error {
 		return fmt.Errorf("save the buffer before adding a breakpoint")
 	}
 	line := a.current().Cursors()[0].Point.Line
-	if a.breakpoints[path] == nil {
-		a.breakpoints[path] = make(map[int]bool)
-	}
-	if a.breakpoints[path][line] {
-		delete(a.breakpoints[path], line)
+	current := a.currentEditorBuffer()
+	if current.breakpoints[line] {
+		delete(current.breakpoints, line)
 	} else {
-		a.breakpoints[path][line] = true
+		current.breakpoints[line] = true
 	}
 	if a.dap != nil {
-		lines := a.breakpointLines(path)
+		lines := breakpointLines(current)
 		go a.sendBreakpoints(a.dap, path, lines)
 	}
 	return nil
@@ -134,6 +156,7 @@ func (a *App) debugDisconnect(arguments string) error {
 		a.dapCancel()
 	}
 	a.dap = nil
+	a.dapMode = ""
 	return err
 }
 
@@ -156,9 +179,11 @@ func (a *App) readDebugEvents(adapter *protocol.DebugProcess) {
 }
 
 func (a *App) startDebugConfiguration(adapter *protocol.DebugProcess) {
-	breakpoints := make(map[string][]int, len(a.breakpoints))
-	for path := range a.breakpoints {
-		breakpoints[path] = a.breakpointLines(path)
+	breakpoints := make(map[string][]int, len(a.buffers))
+	for _, current := range a.buffers {
+		if current.text.Path() != "" && len(current.breakpoints) > 0 {
+			breakpoints[current.text.Path()] = breakpointLines(current)
+		}
 	}
 	go func() {
 		for path, lines := range breakpoints {
@@ -172,9 +197,9 @@ func (a *App) startDebugConfiguration(adapter *protocol.DebugProcess) {
 	}()
 }
 
-func (a *App) breakpointLines(path string) []int {
-	lines := make([]int, 0, len(a.breakpoints[path]))
-	for line := range a.breakpoints[path] {
+func breakpointLines(current *editorBuffer) []int {
+	lines := make([]int, 0, len(current.breakpoints))
+	for line := range current.breakpoints {
 		lines = append(lines, line)
 	}
 	sort.Ints(lines)

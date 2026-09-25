@@ -22,3 +22,21 @@ func TestBlockCommentCarriesAcrossLines(t *testing.T) {
 		t.Fatalf("Highlight() = %+v", spans)
 	}
 }
+
+func TestDiffHighlighting(t *testing.T) {
+	highlighter := syntax.New("changes.diff")
+	tests := []struct {
+		line string
+		kind syntax.Kind
+	}{
+		{line: "+added", kind: syntax.Added},
+		{line: "-removed", kind: syntax.Removed},
+		{line: "@@ -1 +1 @@", kind: syntax.Keyword},
+	}
+	for line, test := range tests {
+		spans := highlighter.Highlight(line, test.line)
+		if len(spans) != 1 || spans[0].Kind != test.kind {
+			t.Errorf("Highlight(%q) = %+v, want kind %v", test.line, spans, test.kind)
+		}
+	}
+}

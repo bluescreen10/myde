@@ -23,7 +23,7 @@ type shellBuffer struct {
 
 func (a *App) openTerminal(arguments string) error {
 	for index, current := range a.buffers {
-		if a.terminals[current] != nil {
+		if current.terminal != nil {
 			a.active = index
 			a.ensureCursorVisible()
 			return nil
@@ -34,7 +34,7 @@ func (a *App) openTerminal(arguments string) error {
 	a.addBuffer(current)
 	current.SetHistoryLimit(0)
 	shell := &shellBuffer{buffer: current, workingPath: a.root, shellPath: userShell()}
-	a.terminals[current] = shell
+	a.currentEditorBuffer().terminal = shell
 	a.appendTerminalPrompt(shell)
 	a.topLine = 0
 	return nil
@@ -136,7 +136,8 @@ func isTerminalExit(command string) bool {
 }
 
 func (a *App) finishTerminalCommand(shell *shellBuffer, output string) {
-	if a.terminals[shell.buffer] != shell {
+	editorBuffer := a.editorBufferFor(shell.buffer)
+	if editorBuffer == nil || editorBuffer.terminal != shell {
 		return
 	}
 	if output != "" {

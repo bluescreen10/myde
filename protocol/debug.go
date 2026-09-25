@@ -4,20 +4,55 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // DebugProcess manages a Debug Adapter Protocol subprocess.
 type DebugProcess struct {
 	command *exec.Cmd
 	stream  *Stream
+	closer  io.Closer
 
 	nextSequence atomic.Int64
 	pendingMu    sync.Mutex
 	pending      map[int64]chan Message
 	events       chan Notification
+}
+
+// StartDebugReverse launches a debug adapter that connects back to a local TCP listener.
+// Every {address} token in the arguments is replaced with the listener address.
+func StartDebugReverse(ctx context.Context, command string, arguments ...string) (*DebugProcess, error) {
+	arguments = append([]string(nil), arguments...)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("listen for debug adapter: %w", err)
+	}
+	defer listener.Close()
+	address := listener.Addr().String()
+	for index := range arguments {
+		arguments[index] = strings.ReplaceAll(arguments[index], "{address}", address)
+	}
+
+	cmd := exec.CommandContext(ctx, command, arguments...)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start debug adapter: %w", err)
+	}
+	if tcpListener, ok := listener.(*net.TCPListener); ok {
+		_ = tcpListener.SetDeadline(time.Now().Add(5 * time.Second))
+	}
+	connection, err := listener.Accept()
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("accept debug adapter connection: %w", err)
+	}
+	return newDebugProcess(cmd, connection, connection), nil
 }
 
 // StartDebug launches a debug adapter over standard I/O.
@@ -34,17 +69,24 @@ func StartDebug(ctx context.Context, command string, arguments ...string) (*Debu
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start debug adapter: %w", err)
 	}
+	return newDebugProcess(cmd, output, input), nil
+}
+
+func newDebugProcess(command *exec.Cmd, reader io.Reader, writer io.Writer) *DebugProcess {
 	process := &DebugProcess{
-		command: cmd,
-		stream:  NewStream(output, input),
+		command: command,
+		stream:  NewStream(reader, writer),
 		pending: make(map[int64]chan Message),
 		events:  make(chan Notification, 64),
 	}
+	if closer, ok := reader.(io.Closer); ok {
+		process.closer = closer
+	}
 	go process.readMessages()
 	go func() {
-		_ = cmd.Wait()
+		_ = command.Wait()
 	}()
-	return process, nil
+	return process
 }
 
 // Request sends a DAP request and waits for its response.
@@ -94,6 +136,9 @@ func (p *DebugProcess) Events() <-chan Notification {
 
 // Close terminates the debug adapter.
 func (p *DebugProcess) Close() error {
+	if p.closer != nil {
+		_ = p.closer.Close()
+	}
 	if p.command.Process == nil {
 		return nil
 	}

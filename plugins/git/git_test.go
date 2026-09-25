@@ -21,6 +21,7 @@ type testHost struct {
 	bufferName  string
 	buffer      []byte
 	message     string
+	modes       []plugin.Mode
 }
 
 func (h *testHost) Root() string {
@@ -31,8 +32,22 @@ func (h *testHost) CurrentPath() string {
 	return h.currentPath
 }
 
+func (h *testHost) CurrentDocument() plugin.Document {
+	return plugin.Document{Path: h.currentPath, Content: append([]byte(nil), h.buffer...)}
+}
+
+func (h *testHost) ReplaceCurrentDocument(content []byte) error {
+	h.buffer = append([]byte(nil), content...)
+	return nil
+}
+
 func (h *testHost) RegisterCommand(name string, command plugin.Command) error {
 	h.commands[name] = command
+	return nil
+}
+
+func (h *testHost) RegisterMode(mode plugin.Mode) error {
+	h.modes = append(h.modes, mode)
 	return nil
 }
 

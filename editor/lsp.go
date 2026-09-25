@@ -5,16 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 	"unicode"
 	"unicode/utf16"
 
 	"github.com/bluescreen10/myde/buffer"
+	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/protocol"
 )
 
@@ -48,34 +47,12 @@ type definitionTarget struct {
 	character int
 }
 
-func (a *App) autoStartGoLSP() {
-	hasGo := false
-	if _, err := os.Stat(filepath.Join(a.root, "go.mod")); err == nil {
-		hasGo = true
-	}
-	if !hasGo {
-		for _, path := range a.files {
-			if strings.EqualFold(filepath.Ext(path), ".go") {
-				hasGo = true
-				break
-			}
-		}
-	}
-	if !hasGo {
-		return
-	}
-	path, err := exec.LookPath("gopls")
-	if err != nil {
-		a.message = "Go files detected; install gopls for language features"
-		return
-	}
-	if err := a.lspStart(path); err != nil {
-		a.message = "start gopls: " + err.Error()
-	}
-}
-
 func (a *App) lspStart(arguments string) error {
 	if arguments == "" {
+		mode := a.modeForBuffer(a.current())
+		if mode.LanguageServer.Command != "" {
+			return a.startLanguageServer(mode.LanguageServer, a.currentEditorBuffer().mode)
+		}
 		a.prompt("Language server command", func(command string) {
 			if err := a.lspStart(command); err != nil {
 				a.message = err.Error()
@@ -87,17 +64,32 @@ func (a *App) lspStart(arguments string) error {
 	if err != nil {
 		return err
 	}
+	return a.startLanguageServer(plugin.Program{Command: command, Arguments: commandArguments}, a.currentEditorBuffer().mode)
+}
+
+func (a *App) startLanguageServer(program plugin.Program, mode string) error {
+	command, err := exec.LookPath(program.Command)
+	if err != nil {
+		return fmt.Errorf("find %s: %w", program.Command, err)
+	}
 	if a.lspCancel != nil {
 		a.lspCancel()
 	}
+	a.lsp = nil
+	a.lspMode = ""
+	for _, current := range a.buffers {
+		current.lspOpened = false
+		current.diagnostics = nil
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	server, err := protocol.Start(ctx, command, commandArguments...)
+	server, err := protocol.Start(ctx, command, program.Arguments...)
 	if err != nil {
 		cancel()
 		return err
 	}
 	a.lsp = server
 	a.lspCancel = cancel
+	a.lspMode = mode
 
 	requestContext, requestCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer requestCancel()
@@ -131,15 +123,19 @@ func (a *App) lspStart(arguments string) error {
 	if err != nil {
 		cancel()
 		a.lsp = nil
+		a.lspMode = ""
 		return err
 	}
 	a.lspSync = synchronizationKind(initialized.Capabilities.TextDocumentSync)
 	a.lspCompletionResolve = initialized.Capabilities.CompletionProvider.ResolveProvider
 	if err := server.Notify("initialized", map[string]any{}); err != nil {
+		cancel()
+		a.lsp = nil
+		a.lspMode = ""
 		return err
 	}
 	for _, current := range a.buffers {
-		a.notifyLSPDidOpen(current)
+		a.notifyLSPDidOpen(current.text)
 	}
 	go a.readLSPEvents(server)
 	a.message = "language server started: " + command
@@ -147,17 +143,35 @@ func (a *App) lspStart(arguments string) error {
 }
 
 func (a *App) notifyLSPDidOpen(current *buffer.Buffer) {
-	if a.lsp == nil || current.Path() == "" {
+	editorBuffer := a.editorBufferFor(current)
+	if editorBuffer == nil || a.lsp == nil || current.Path() == "" || editorBuffer.mode != a.lspMode || editorBuffer.lspOpened {
 		return
 	}
+	mode := a.modeForBuffer(current)
 	_ = a.lsp.Notify("textDocument/didOpen", map[string]any{
 		"textDocument": map[string]any{
 			"uri":        fileURI(current.Path()),
-			"languageId": languageID(current.Path()),
+			"languageId": mode.LanguageID,
 			"version":    current.Revision(),
 			"text":       string(current.Bytes()),
 		},
 	})
+	editorBuffer.lspOpened = true
+}
+
+func (a *App) notifyLSPDidClose(current *buffer.Buffer) {
+	editorBuffer := a.editorBufferFor(current)
+	if editorBuffer == nil {
+		return
+	}
+	editorBuffer.diagnostics = nil
+	if a.lsp == nil || current.Path() == "" || !editorBuffer.lspOpened {
+		return
+	}
+	_ = a.lsp.Notify("textDocument/didClose", map[string]any{
+		"textDocument": map[string]any{"uri": fileURI(current.Path())},
+	})
+	editorBuffer.lspOpened = false
 }
 
 type textChange struct {
@@ -180,7 +194,8 @@ func newTextChange(current *buffer.Buffer, start, end buffer.Point, text string)
 }
 
 func (a *App) notifyLSPChanges(current *buffer.Buffer, changes []textChange) {
-	if a.lsp == nil || current.Path() == "" {
+	editorBuffer := a.editorBufferFor(current)
+	if editorBuffer == nil || a.lsp == nil || current.Path() == "" || editorBuffer.mode != a.lspMode || !editorBuffer.lspOpened {
 		return
 	}
 	contentChanges := []map[string]any{{"text": string(current.Bytes())}}
@@ -206,7 +221,8 @@ func (a *App) notifyLSPChanges(current *buffer.Buffer, changes []textChange) {
 }
 
 func (a *App) notifyLSPFullChange(current *buffer.Buffer) {
-	if a.lsp == nil || current.Path() == "" {
+	editorBuffer := a.editorBufferFor(current)
+	if editorBuffer == nil || a.lsp == nil || current.Path() == "" || editorBuffer.mode != a.lspMode || !editorBuffer.lspOpened {
 		return
 	}
 	_ = a.lsp.Notify("textDocument/didChange", map[string]any{
@@ -242,7 +258,7 @@ func protocolPosition(current *buffer.Buffer, point buffer.Point) textPosition {
 }
 
 func (a *App) requestLSPCompletion() {
-	if a.lsp == nil || a.current().Path() == "" {
+	if !a.hasLanguageServerForCurrentMode() || a.current().Path() == "" {
 		return
 	}
 	server := a.lsp
@@ -337,7 +353,7 @@ func updateCompletionDetails(items []paletteItem, details completionDetails) {
 }
 
 func (a *App) requestLSPDefinition(arguments string) error {
-	if a.lsp == nil {
+	if !a.hasLanguageServerForCurrentMode() {
 		return fmt.Errorf("no language server is running")
 	}
 	current := a.current()
@@ -600,7 +616,7 @@ func (a *App) applyLSPCompletion(current *buffer.Buffer, completion lspCompletio
 		current.SetCursors([]buffer.Cursor{{Anchor: point, Point: point}})
 		break
 	}
-	a.highlights[current].Invalidate(changedLine)
+	a.editorBufferFor(current).highlighter.Invalidate(changedLine)
 	a.notifyLSPFullChange(current)
 	a.ensureCursorVisible()
 }
@@ -661,22 +677,4 @@ func pathFromURI(value string) string {
 		return value
 	}
 	return filepath.FromSlash(parsed.Path)
-}
-
-func languageID(path string) string {
-	extension := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
-	switch extension {
-	case "js", "jsx":
-		return "javascript"
-	case "ts", "tsx":
-		return "typescript"
-	case "py":
-		return "python"
-	case "rs":
-		return "rust"
-	case "cc", "cpp", "cxx":
-		return "cpp"
-	default:
-		return extension
-	}
 }

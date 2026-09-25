@@ -29,6 +29,35 @@ func TestNewBuffersStartClean(t *testing.T) {
 	}
 }
 
+func TestSetPathPreservesDirtyContentAndHistory(t *testing.T) {
+	directory := t.TempDir()
+	oldPath := filepath.Join(directory, "old.txt")
+	newPath := filepath.Join(directory, "new.txt")
+	if err := os.WriteFile(oldPath, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b, err := buffer.Open(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Insert(b.Len(), []byte(" after"))
+	if err := os.Rename(oldPath, newPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetPath(newPath); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Path(); got != newPath {
+		t.Fatalf("Path() = %q, want %q", got, newPath)
+	}
+	if !b.IsDirty() {
+		t.Fatal("SetPath cleared the dirty state")
+	}
+	if !b.Undo() || string(b.Bytes()) != "before" {
+		t.Fatalf("undo after SetPath = %q", b.Bytes())
+	}
+}
+
 func TestPointsAndLines(t *testing.T) {
 	b := buffer.New()
 	b.Insert(0, []byte("one\ntwø\nthree"))

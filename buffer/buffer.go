@@ -490,6 +490,31 @@ func (b *Buffer) SetCursors(cursors []Cursor) {
 	b.cursors = append(b.cursors[:0], cursors...)
 }
 
+// SetPath updates the backing path after its file has been moved externally.
+// It preserves the buffer contents, dirty state, and undo history.
+func (b *Buffer) SetPath(path string) error {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", path, err)
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", absolute, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("set buffer path: %s is a directory", absolute)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.readOnly {
+		return errors.New("set buffer path: read-only")
+	}
+	b.path = absolute
+	b.modified = info.ModTime()
+	return nil
+}
+
 // Save writes the buffer atomically. A non-empty path changes its backing file.
 func (b *Buffer) Save(path string) error {
 	b.mu.Lock()

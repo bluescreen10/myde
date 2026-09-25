@@ -1,12 +1,12 @@
 package editor
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
 	"github.com/bluescreen10/myde/buffer"
 	"github.com/bluescreen10/myde/plugin"
-	"github.com/bluescreen10/myde/syntax"
 )
 
 // Root returns the absolute workspace root.
@@ -17,6 +17,50 @@ func (a *App) Root() string {
 // CurrentPath returns the active buffer's backing path, if it has one.
 func (a *App) CurrentPath() string {
 	return a.current().Path()
+}
+
+// CurrentDocument returns an immutable snapshot of the active buffer.
+func (a *App) CurrentDocument() plugin.Document {
+	current := a.current()
+	return plugin.Document{
+		Path:     current.Path(),
+		Content:  current.Bytes(),
+		Dirty:    current.IsDirty(),
+		ReadOnly: current.IsReadOnly(),
+	}
+}
+
+// ReplaceCurrentDocument replaces the active buffer as one undoable edit.
+func (a *App) ReplaceCurrentDocument(content []byte) error {
+	current := a.current()
+	if current.IsReadOnly() {
+		return fmt.Errorf("%s is read-only", current.Name())
+	}
+	if a.currentEditorBuffer().terminal != nil {
+		return fmt.Errorf("terminal buffers cannot be replaced by plugins")
+	}
+	before := current.Bytes()
+	if bytes.Equal(before, content) {
+		return nil
+	}
+	offsets := make([]int, len(current.Cursors()))
+	for index, cursor := range current.Cursors() {
+		offsets[index] = current.Offset(cursor.Point)
+	}
+	current.BeginTransaction()
+	current.Delete(0, current.Len())
+	current.Insert(0, content)
+	current.EndTransaction()
+	cursors := make([]buffer.Cursor, len(offsets))
+	for index, offset := range offsets {
+		point := current.Point(min(offset, current.Len()))
+		cursors[index] = buffer.Cursor{Anchor: point, Point: point}
+	}
+	current.SetCursors(cursors)
+	a.currentEditorBuffer().highlighter = a.highlighterForBuffer(current)
+	a.notifyLSPFullChange(current)
+	a.ensureCursorVisible()
+	return nil
 }
 
 // RegisterCommand adds a plugin command to the command palette.
@@ -51,13 +95,12 @@ func (a *App) CloseSidebar() {
 func (a *App) OpenReadOnlyBuffer(name string, content []byte) {
 	a.CloseSidebar()
 	view := buffer.NewReadOnly(name, content)
-	for index, current := range a.buffers {
+	for index, editorBuffer := range a.buffers {
+		current := editorBuffer.text
 		if !current.IsReadOnly() || current.Name() != name {
 			continue
 		}
-		delete(a.highlights, current)
-		a.buffers[index] = view
-		a.highlights[view] = syntax.New(name)
+		a.buffers[index] = a.newEditorBuffer(view)
 		a.active = index
 		a.topLine = 0
 		a.leftColumn = 0

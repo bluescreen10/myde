@@ -17,7 +17,7 @@ func (a *App) cut(arguments string) error {
 		a.message = "nothing selected"
 		return nil
 	}
-	if shell := a.terminals[current]; shell != nil {
+	if shell := a.currentEditorBuffer().terminal; shell != nil {
 		for _, cursor := range current.Cursors() {
 			start := min(current.Offset(cursor.Anchor), current.Offset(cursor.Point))
 			end := max(current.Offset(cursor.Anchor), current.Offset(cursor.Point))
@@ -46,7 +46,7 @@ func (a *App) paste(arguments string) error {
 		a.message = "clipboard is empty"
 		return nil
 	}
-	if shell := a.terminals[a.current()]; shell != nil {
+	if shell := a.currentEditorBuffer().terminal; shell != nil {
 		if shell.running {
 			return fmt.Errorf("terminal command is still running")
 		}

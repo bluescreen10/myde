@@ -34,6 +34,8 @@ processes.
 | `C-x C-f`, `C-x C-s`, `C-x b`, `C-x k` | Emacs open/save/switch/close chords on macOS |
 | `C-q` | quit; modified buffers offer Save All, Discard All, or Cancel |
 | `C-1` … `C-9` | switch directly to buffer 1 … 9 |
+| `C-Shift-N` | create a file in the focused explorer directory, or a new buffer in the editor |
+| `C-r` | rename the selected file while the file explorer is focused |
 | `Shift-Arrow` | extend the text selection |
 | `Cmd-Left` / `Cmd-Right` | beginning / end of line |
 | `Cmd-Up` / `Cmd-Down` | beginning / end of file |
@@ -71,8 +73,12 @@ keybind = super+shift+arrow_down=csi:1;10B
 
 The file explorer is a navigable tree on the left. Type while it is focused to
 filter paths, use Up/Down to select entries, Left/Right to collapse or expand
-folders, and Enter to open a file and close the explorer. Escape clears the
-filter, closes the explorer, and returns focus to the editor.
+folders, and Enter to open a file and close the explorer. `C-Shift-N` creates a
+file in the selected directory, or beside the selected file. `C-r` renames the
+selected file, and Delete removes it after confirmation. Escape cancels a
+prompt or closes the explorer and returns focus to the editor. While visible,
+the explorer automatically reflects files created, renamed, or removed by
+external tools without losing its current filter or expanded folders.
 
 ## Commands
 
@@ -86,17 +92,28 @@ results, and keyboard help in separate bordered regions. Important commands incl
 - `git.diff` and `git.diff staged` — open workspace changes in a read-only
   buffer.
 - `git.commit` — open a centered commit-message prompt and create the commit.
+- `switch.mode` — select the active buffer's mode from the modes registered by
+  core and plugins. File extensions choose the initial mode automatically.
+- `file.new` — create a file in the focused explorer directory, or create a
+  clean untitled buffer when invoked from the editor.
+- `file.rename` — rename the selected explorer file without losing an open
+  buffer's edits or undo history.
+- `go.fmt` — format the active buffer in memory as one undoable edit.
+- `go.vet`, `go.build`, and `go.test` — run the corresponding Go tool for the
+  active file's package. Save modified buffers before running these commands.
 - `lsp.start` — prompt for a language server command. Diagnostics appear inline,
   completion uses `textDocument/completion`, and `lsp.definition` navigates to
-  definitions. In Go workspaces, `gopls` starts automatically when it is on
-  `PATH`; completion opens with `C-Space` and updates while identifiers are
-  typed. Completion suggestions do not capture text input: use Up/Down and
-  Enter or Tab to accept one. Completion opens beside the text cursor and shows
-  signature and documentation details supplied by the language server; servers
-  such as `gopls` that resolve completion items are supported. LSP errors use
+  definitions. When a Go buffer becomes active, the Go plugin starts `gopls`
+  automatically when it is on `PATH`; completion opens with `C-Space` and
+  updates while identifiers are typed. Completion suggestions do not capture
+  text input: use Up/Down and Enter or Tab to accept one. Completion opens
+  beside the text cursor and shows signature and documentation details supplied
+  by the language server; servers such as `gopls` that resolve completion items
+  are supported. LSP errors use
   red curly underlines and a tinted line background. Moving the cursor onto an
   error opens a diagnostic card with its source, code, and full message.
-- `debug.start` — prompt for a DAP adapter command. Then use `debug.launch`,
+- `debug.start` — start the adapter registered for the active mode, or prompt
+  when that mode has no adapter. Then use `debug.launch`,
   `debug.toggle-breakpoint`, `debug.continue`, `debug.next`, `debug.step-in`,
   `debug.step-out`, and `debug.disconnect`.
 - `shell.run` — run a non-interactive command at the workspace root and inspect
@@ -149,11 +166,13 @@ an error in the status line.
 
 ## Plugins
 
-Plugins register commands through the public `plugin.Host` interface and can
+Plugins register commands and editing modes through the public `plugin.Host`
+interface. A mode can associate file extensions with syntax, an LSP server,
+and a DAP adapter. Plugins can also inspect or replace the active document and
 open generic sidebars, text prompts, and read-only buffers without importing
-editor internals. The Git plugin in `plugins/git` is loaded by the `myde`
-command and owns all Git subprocess and repository logic. The editor core has
-no hard-coded `git.*` commands.
+editor internals. The Git plugin in `plugins/git` owns Git subprocess and
+repository logic. The Go plugin in `plugins/golang` owns Go mode, `gopls`,
+Delve, and the `go.*` commands.
 
 ## Architecture
 
@@ -167,8 +186,11 @@ no hard-coded `git.*` commands.
 - `plugin` — the command registration and host-service API used by plugins.
 - `plugins/git` — Git staging, diffs, and commits implemented outside the editor
   core.
+- `plugins/golang` — Go mode, formatting, package commands, gopls, and Delve.
 - `editor` — commands, palettes, multi-cursor edits, generic sidebars,
-  extensions, LSP/DAP, search, hooks, and the VS Dark 2026 theme.
+  extensions, LSP/DAP, search, hooks, and the VS Dark 2026 theme. Each editor
+  buffer owns its syntax cache, diagnostics, breakpoints, mode, and terminal
+  state rather than storing those in path-keyed application maps.
 
 The built-in highlighter is intentionally lightweight. The `syntax.Highlighter`
 boundary is where a Tree-sitter-backed parser can be installed without coupling

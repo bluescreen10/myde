@@ -17,6 +17,8 @@ const (
 	String
 	Number
 	Type
+	Added
+	Removed
 )
 
 // Span assigns a syntax kind to a half-open rune range.
@@ -46,6 +48,15 @@ type Highlighter struct {
 // New returns a highlighter selected from a file name.
 func New(path string) *Highlighter {
 	return &Highlighter{language: languageForPath(path)}
+}
+
+// NewLanguage returns a highlighter for an explicitly selected language.
+func NewLanguage(language string) *Highlighter {
+	language = strings.TrimSpace(strings.ToLower(language))
+	if language == "" {
+		language = "plain"
+	}
+	return &Highlighter{language: language}
 }
 
 // Invalidate discards parser state at and after line.
@@ -84,6 +95,10 @@ func (h *Highlighter) Highlight(line int, text string) []Span {
 func (h *Highlighter) parseLine(text string, start lineState) lineResult {
 	runes := []rune(text)
 	result := lineResult{text: text, start: start, end: start}
+	if h.language == "diff" {
+		result.spans = diffSpans(runes)
+		return result
+	}
 	for i := 0; i < len(runes); {
 		if result.end.inBlockComment {
 			end := findPair(runes, i, '*', '/')
@@ -159,9 +174,33 @@ func languageForPath(path string) string {
 		return "shell"
 	case ".c", ".h", ".cc", ".cpp", ".hpp":
 		return "c"
+	case ".diff", ".patch":
+		return "diff"
 	default:
 		return "plain"
 	}
+}
+
+func diffSpans(line []rune) []Span {
+	if len(line) == 0 {
+		return nil
+	}
+	kind := Plain
+	text := string(line)
+	switch {
+	case strings.HasPrefix(text, "+++") || strings.HasPrefix(text, "---") || strings.HasPrefix(text, "diff "):
+		kind = Type
+	case line[0] == '+':
+		kind = Added
+	case line[0] == '-':
+		kind = Removed
+	case strings.HasPrefix(text, "@@"):
+		kind = Keyword
+	}
+	if kind == Plain {
+		return nil
+	}
+	return []Span{{Start: 0, End: len(line), Kind: kind}}
 }
 
 func isKeyword(language, word string) bool {

@@ -114,7 +114,7 @@ func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.SidebarI
 		if item.Kind != stagedKind {
 			return nil
 		}
-		if _, err := g.run("reset", "-q", "HEAD", "--", item.Value); err != nil {
+		if _, err := g.run("reset", "-q", "--", item.Value); err != nil {
 			return err
 		}
 		if err := g.showStagePanel(item.Value); err != nil {

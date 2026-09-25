@@ -73,9 +73,10 @@ func (a *App) renderTabs(width int) {
 	style := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Background}
 	active := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Selection, Bold: true}
 	x := 0
-	for index, current := range a.buffers {
+	for index, editorBuffer := range a.buffers {
+		current := editorBuffer.text
 		name := current.Name()
-		if a.terminals[current] == nil && current.IsDirty() {
+		if editorBuffer.terminal == nil && current.IsDirty() {
 			name += " ●"
 		}
 		label := " " + name + " "
@@ -187,7 +188,7 @@ func (a *App) renderFiles(statusRow int) int {
 	}
 	a.drawPanelSeparator(0, 3, sidebarWidth, border)
 
-	rows := max(0, panelHeight-6)
+	rows := max(0, panelHeight-7)
 	a.browser.ensureVisible(rows)
 	activePath := ""
 	if a.current().Path() != "" {
@@ -223,18 +224,23 @@ func (a *App) renderFiles(statusRow int) int {
 		a.screen.Text(2, 4+row, truncate(label, sidebarWidth-4), style)
 	}
 
-	footerSeparator := panelHeight - 2
+	footerSeparator := panelHeight - 3
 	a.drawPanelSeparator(0, footerSeparator, sidebarWidth, border)
 	help := []styledText{{text: "M-f", style: accent}, {text: " focus", style: border}}
 	if a.browser.focused {
-		help = []styledText{
+		navigation := []styledText{
 			{text: "↑↓", style: accent}, {text: " move  ", style: border},
 			{text: "←→", style: accent}, {text: " fold  ", style: border},
-			{text: "Enter", style: accent}, {text: " open  ", style: border},
-			{text: "Esc", style: accent}, {text: " editor", style: border},
+			{text: "Enter", style: accent}, {text: " open", style: border},
+		}
+		drawStyledText(a.screen, 2, footerSeparator+1, sidebarWidth-4, navigation)
+		help = []styledText{
+			{text: "C-S-N", style: accent}, {text: " new  ", style: border},
+			{text: "C-r", style: accent}, {text: " rename  ", style: border},
+			{text: "Del", style: accent}, {text: " delete", style: border},
 		}
 	}
-	drawStyledText(a.screen, 2, footerSeparator+1, sidebarWidth-4, help)
+	drawStyledText(a.screen, 2, footerSeparator+2, sidebarWidth-4, help)
 	return sidebarWidth
 }
 
@@ -245,12 +251,13 @@ func fileSidebarWidth(width int) int {
 
 func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 	current := a.current()
+	editorBuffer := a.currentEditorBuffer()
 	bodyHeight := statusRow - 1
 	lineNumberWidth := len(strconv.Itoa(max(1, current.LineCount()))) + 2
 	textX := sidebarWidth + lineNumberWidth
 	available := max(0, width-textX)
 	muted := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Background}
-	highlighter := a.highlights[current]
+	highlighter := editorBuffer.highlighter
 
 	for row := 0; row < bodyHeight; row++ {
 		lineNumber := a.topLine + row
@@ -261,7 +268,7 @@ func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 		}
 		gutter := fmt.Sprintf("%*d ", lineNumberWidth-1, lineNumber+1)
 		gutterStyle := muted
-		if a.breakpoints[current.Path()][lineNumber] {
+		if editorBuffer.breakpoints[lineNumber] {
 			gutter = fmt.Sprintf("%*d●", lineNumberWidth-1, lineNumber+1)
 			gutterStyle.Foreground = a.theme.Error
 		}
@@ -343,7 +350,8 @@ func (a *App) renderStatus(width, row int) {
 	if left == " " {
 		left = " C-x C-s save  C-p files / > commands  C-q quit"
 	}
-	right := fmt.Sprintf("%s  Ln %d, Col %d  %d cursors ", a.theme.Name, point.Line+1, point.Column+1, len(a.current().Cursors()))
+	mode := a.modeForBuffer(a.current())
+	right := fmt.Sprintf("%s  %s  Ln %d, Col %d  %d cursors ", mode.Name, a.theme.Name, point.Line+1, point.Column+1, len(a.current().Cursors()))
 	rightWidth := displayWidth(right)
 	left = truncate(left, max(0, width-rightWidth-1))
 	a.screen.Text(0, row, left, style)
@@ -694,7 +702,11 @@ type columnRange struct {
 
 func (a *App) errorRanges(current *buffer.Buffer, line, lineLength int) []columnRange {
 	ranges := make([]columnRange, 0)
-	for _, item := range a.diagnostics[current.Path()] {
+	editorBuffer := a.editorBufferFor(current)
+	if editorBuffer == nil {
+		return ranges
+	}
+	for _, item := range editorBuffer.diagnostics {
 		if !isErrorDiagnostic(item) || line < item.line || line > item.endLine {
 			continue
 		}
@@ -732,7 +744,7 @@ func isErrorDiagnostic(item diagnostic) bool {
 func (a *App) diagnosticAtCursor() (diagnostic, bool) {
 	current := a.current()
 	point := current.Cursors()[0].Point
-	for _, item := range a.diagnostics[current.Path()] {
+	for _, item := range a.currentEditorBuffer().diagnostics {
 		if !isErrorDiagnostic(item) || point.Line < item.line || point.Line > item.endLine {
 			continue
 		}

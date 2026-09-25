@@ -72,6 +72,10 @@ func (t Theme) syntaxStyle(kind syntax.Kind) terminal.Style {
 		foreground = t.Number
 	case syntax.Type:
 		foreground = t.Type
+	case syntax.Added:
+		foreground = t.String
+	case syntax.Removed:
+		foreground = t.Error
 	}
 	return terminal.Style{Foreground: foreground, Background: t.Background}
 }

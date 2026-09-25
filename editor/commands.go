@@ -10,7 +10,6 @@ import (
 
 	"github.com/bluescreen10/myde/buffer"
 	"github.com/bluescreen10/myde/plugin"
-	"github.com/bluescreen10/myde/syntax"
 )
 
 func (a *App) registerCommands() {
@@ -40,7 +39,9 @@ func (a *App) registerCommands() {
 		"edit.paste":              a.paste,
 		"edit.redo":               a.redo,
 		"edit.undo":               a.undo,
+		"file.new":                a.newFile,
 		"file.open":               a.openFilePalette,
+		"file.rename":             a.renameFile,
 		"file.save":               a.save,
 		"lsp.definition":          a.requestLSPDefinition,
 		"lsp.start":               a.lspStart,
@@ -48,6 +49,7 @@ func (a *App) registerCommands() {
 		"search.project":          a.searchProject,
 		"shell.exec":              a.shellExec,
 		"shell.run":               a.shellRun,
+		"switch.mode":             a.switchMode,
 		"terminal.open":           a.openTerminal,
 		"view.files":              a.toggleFiles,
 	}
@@ -152,7 +154,7 @@ func (a *App) save(arguments string) error {
 	if current.IsReadOnly() {
 		return fmt.Errorf("%s is read-only", current.Name())
 	}
-	if a.terminals[current] != nil {
+	if a.currentEditorBuffer().terminal != nil {
 		return fmt.Errorf("terminal buffers cannot be saved")
 	}
 	if current.Path() == "" && arguments == "" {
@@ -166,24 +168,27 @@ func (a *App) save(arguments string) error {
 	if arguments != "" && !filepath.IsAbs(arguments) {
 		arguments = filepath.Join(a.root, arguments)
 	}
+	previousPath := current.Path()
 	if err := current.Save(arguments); err != nil {
 		return err
 	}
-	a.highlights[current] = syntaxForBuffer(current)
+	if current.Path() != previousPath {
+		a.currentEditorBuffer().mode = a.modeForPath(current.Path())
+	}
+	a.currentEditorBuffer().highlighter = a.highlighterForBuffer(current)
+	a.activateCurrentMode()
+	a.notifyLSPDidOpen(current)
 	a.topLine = 0
 	a.message = "saved " + current.Name()
 	a.runHooks("save")
 	return nil
 }
 
-func syntaxForBuffer(current *buffer.Buffer) *syntax.Highlighter {
-	return syntax.New(current.Path())
-}
-
 func (a *App) quit(arguments string) error {
 	dirty := make([]*buffer.Buffer, 0)
-	for _, current := range a.buffers {
-		if a.terminals[current] != nil {
+	for _, editorBuffer := range a.buffers {
+		current := editorBuffer.text
+		if editorBuffer.terminal != nil {
 			continue
 		}
 		if current.IsDirty() {
@@ -249,10 +254,14 @@ func (a *App) saveDirtyBuffersAndQuit(dirty []*buffer.Buffer, index int) {
 }
 
 func (a *App) saveBufferForQuit(current *buffer.Buffer, path string) error {
+	previousPath := current.Path()
 	if err := current.Save(path); err != nil {
 		return err
 	}
-	a.highlights[current] = syntaxForBuffer(current)
+	if current.Path() != previousPath {
+		a.editorBufferFor(current).mode = a.modeForPath(current.Path())
+	}
+	a.editorBufferFor(current).highlighter = a.highlighterForBuffer(current)
 	if current == a.current() {
 		a.runHooks("save")
 	}
@@ -260,9 +269,9 @@ func (a *App) saveBufferForQuit(current *buffer.Buffer, path string) error {
 }
 
 func (a *App) finishQuit() {
-	for _, terminalBuffer := range a.terminals {
-		if terminalBuffer.cancel != nil {
-			terminalBuffer.cancel()
+	for _, current := range a.buffers {
+		if current.terminal != nil && current.terminal.cancel != nil {
+			current.terminal.cancel()
 		}
 	}
 	a.running = false
@@ -276,7 +285,7 @@ func (a *App) finishQuit() {
 
 func (a *App) closeBuffer(arguments string) error {
 	current := a.current()
-	if a.terminals[current] == nil && current.IsDirty() && arguments != "force" {
+	if a.currentEditorBuffer().terminal == nil && current.IsDirty() && arguments != "force" {
 		a.confirmBufferClose(current)
 		return nil
 	}
@@ -318,10 +327,14 @@ func (a *App) saveAndCloseBuffer(current *buffer.Buffer) {
 }
 
 func (a *App) saveBufferBeforeClose(current *buffer.Buffer, path string) error {
+	previousPath := current.Path()
 	if err := current.Save(path); err != nil {
 		return err
 	}
-	a.highlights[current] = syntaxForBuffer(current)
+	if current.Path() != previousPath {
+		a.editorBufferFor(current).mode = a.modeForPath(current.Path())
+	}
+	a.editorBufferFor(current).highlighter = a.highlighterForBuffer(current)
 	a.runHooks("save")
 	a.closeBufferNow(current)
 	return nil
@@ -330,7 +343,7 @@ func (a *App) saveBufferBeforeClose(current *buffer.Buffer, path string) error {
 func (a *App) closeBufferNow(removed *buffer.Buffer) {
 	index := -1
 	for currentIndex, current := range a.buffers {
-		if current == removed {
+		if current.text == removed {
 			index = currentIndex
 			break
 		}
@@ -338,12 +351,11 @@ func (a *App) closeBufferNow(removed *buffer.Buffer) {
 	if index < 0 {
 		return
 	}
-	if terminalBuffer := a.terminals[removed]; terminalBuffer != nil && terminalBuffer.cancel != nil {
+	a.notifyLSPDidClose(removed)
+	if terminalBuffer := a.editorBufferFor(removed).terminal; terminalBuffer != nil && terminalBuffer.cancel != nil {
 		terminalBuffer.cancel()
 	}
 	a.buffers = append(a.buffers[:index], a.buffers[index+1:]...)
-	delete(a.highlights, removed)
-	delete(a.terminals, removed)
 	if index < a.active {
 		a.active--
 	}
@@ -354,16 +366,19 @@ func (a *App) closeBufferNow(removed *buffer.Buffer) {
 	a.topLine = 0
 	a.leftColumn = 0
 	a.message = "closed " + removed.Name()
+	a.activateCurrentMode()
 }
 
 func (a *App) nextBuffer(arguments string) error {
 	a.active = (a.active + 1) % len(a.buffers)
+	a.activateCurrentMode()
 	a.ensureCursorVisible()
 	return nil
 }
 
 func (a *App) previousBuffer(arguments string) error {
 	a.active = (a.active + len(a.buffers) - 1) % len(a.buffers)
+	a.activateCurrentMode()
 	a.ensureCursorVisible()
 	return nil
 }
@@ -377,6 +392,7 @@ func (a *App) selectBuffer(arguments string) error {
 		return fmt.Errorf("buffer %d is not open", number)
 	}
 	a.active = number - 1
+	a.activateCurrentMode()
 	a.ensureCursorVisible()
 	return nil
 }
@@ -386,7 +402,7 @@ func (a *App) undo(arguments string) error {
 	if current.IsReadOnly() {
 		return fmt.Errorf("%s is read-only", current.Name())
 	}
-	if a.terminals[current] != nil {
+	if a.currentEditorBuffer().terminal != nil {
 		return fmt.Errorf("terminal buffers do not have undo history")
 	}
 	if !current.Undo() {
@@ -402,7 +418,7 @@ func (a *App) redo(arguments string) error {
 	if current.IsReadOnly() {
 		return fmt.Errorf("%s is read-only", current.Name())
 	}
-	if a.terminals[current] != nil {
+	if a.currentEditorBuffer().terminal != nil {
 		return fmt.Errorf("terminal buffers do not have undo history")
 	}
 	if !current.Redo() {
@@ -420,7 +436,7 @@ func (a *App) finishHistoryChange(current *buffer.Buffer, operation string) {
 		cursors[index] = buffer.Cursor{Anchor: point, Point: point}
 	}
 	current.SetCursors(cursors)
-	a.highlights[current].Invalidate(0)
+	a.editorBufferFor(current).highlighter.Invalidate(0)
 	a.notifyLSPFullChange(current)
 	a.message = operation
 	a.ensureCursorVisible()
@@ -429,12 +445,13 @@ func (a *App) finishHistoryChange(current *buffer.Buffer, operation string) {
 func (a *App) switchBuffer(arguments string) error {
 	items := make([]paletteItem, 0, len(a.buffers))
 	for index, current := range a.buffers {
-		items = append(items, paletteItem{label: current.Name(), detail: current.Path(), value: fmt.Sprint(index)})
+		items = append(items, paletteItem{label: current.text.Name(), detail: current.text.Path(), value: fmt.Sprint(index)})
 	}
 	a.choose("Switch buffer", items, func(item paletteItem) {
 		for index := range a.buffers {
 			if item.value == fmt.Sprint(index) {
 				a.active = index
+				a.activateCurrentMode()
 				return
 			}
 		}
@@ -445,6 +462,7 @@ func (a *App) switchBuffer(arguments string) error {
 func (a *App) toggleFiles(arguments string) error {
 	if !a.showFiles {
 		a.CloseSidebar()
+		a.syncFileBrowser()
 		a.showFiles = true
 		a.browser.focused = true
 		return nil
@@ -556,7 +574,7 @@ func (a *App) searchProject(arguments string) error {
 }
 
 func (a *App) showCompletion(arguments string) error {
-	if a.lsp != nil {
+	if a.hasLanguageServerForCurrentMode() {
 		a.requestLSPCompletion()
 		return nil
 	}
@@ -610,7 +628,7 @@ func (a *App) completeWord(value string) {
 	current.EndTransaction()
 	updated := current.Point(begin + len(value))
 	current.SetCursors([]buffer.Cursor{{Anchor: updated, Point: updated}})
-	a.highlights[current].Invalidate(point.Line)
+	a.editorBufferFor(current).highlighter.Invalidate(point.Line)
 	a.notifyLSPChanges(current, []textChange{change})
 }
 

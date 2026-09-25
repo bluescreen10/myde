@@ -18,7 +18,6 @@ import (
 	"github.com/bluescreen10/myde/buffer"
 	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/protocol"
-	"github.com/bluescreen10/myde/syntax"
 	"github.com/bluescreen10/myde/terminal"
 )
 
@@ -56,19 +55,18 @@ type App struct {
 	screen  *terminal.Screen
 	reader  *terminal.Reader
 
-	buffers      []*buffer.Buffer
-	highlights   map[*buffer.Buffer]*syntax.Highlighter
-	active       int
-	topLine      int
-	leftColumn   int
-	historyLimit int
-	files        []string
-	showFiles    bool
-	browser      *fileBrowser
-	sidebar      *sidebarPanel
-	diagnostics  map[string][]diagnostic
-	breakpoints  map[string]map[int]bool
-	terminals    map[*buffer.Buffer]*shellBuffer
+	buffers        []*editorBuffer
+	active         int
+	topLine        int
+	leftColumn     int
+	historyLimit   int
+	files          []string
+	directories    []string
+	showFiles      bool
+	browser        *fileBrowser
+	sidebar        *sidebarPanel
+	modes          map[string]plugin.Mode
+	extensionModes map[string]string
 
 	theme           Theme
 	extensions      *extensions
@@ -85,10 +83,12 @@ type App struct {
 
 	lsp                  *protocol.Process
 	lspCancel            context.CancelFunc
+	lspMode              string
 	lspSync              int
 	lspCompletionResolve bool
 	dap                  *protocol.DebugProcess
 	dapCancel            context.CancelFunc
+	dapMode              string
 	servers              chan serverEvent
 }
 
@@ -110,28 +110,32 @@ func New(
 		return nil, err
 	}
 	app := &App{
-		root:         absolute,
-		session:      session,
-		screen:       terminal.NewScreen(output, width, height),
-		reader:       terminal.NewReader(input),
-		highlights:   make(map[*buffer.Buffer]*syntax.Highlighter),
-		diagnostics:  make(map[string][]diagnostic),
-		breakpoints:  make(map[string]map[int]bool),
-		terminals:    make(map[*buffer.Buffer]*shellBuffer),
-		historyLimit: 1000,
-		theme:        VSDark2026(),
-		extensions:   newExtensions(absolute),
-		bindings:     defaultBindings(),
-		servers:      make(chan serverEvent, 64),
+		root:           absolute,
+		session:        session,
+		screen:         terminal.NewScreen(output, width, height),
+		reader:         terminal.NewReader(input),
+		modes:          make(map[string]plugin.Mode),
+		extensionModes: make(map[string]string),
+		historyLimit:   1000,
+		theme:          VSDark2026(),
+		extensions:     newExtensions(absolute),
+		bindings:       defaultBindings(),
+		servers:        make(chan serverEvent, 64),
 	}
 	app.registerCommands()
+	if err := app.registerCoreModes(); err != nil {
+		return nil, err
+	}
 	for _, current := range installed {
 		if err := current.Load(app); err != nil {
 			return nil, fmt.Errorf("load plugin %s: %w", current.Name(), err)
 		}
 	}
-	app.files = workspaceFiles(absolute)
-	app.browser = newFileBrowser(absolute, app.files)
+	contents := scanWorkspace(absolute)
+	app.files = contents.files
+	app.directories = contents.directories
+	app.browser = newFileBrowser(absolute, app.files, app.directories)
+	app.captureFileBrowserDirectories()
 	for _, path := range paths {
 		if err := app.open(path); err != nil {
 			return nil, err
@@ -141,7 +145,7 @@ func New(
 		app.addBuffer(buffer.New())
 	}
 	app.reloadExtensions()
-	app.autoStartGoLSP()
+	app.activateCurrentMode()
 	return app, nil
 }
 
@@ -187,14 +191,13 @@ func (a *App) Run() error {
 }
 
 func (a *App) current() *buffer.Buffer {
-	return a.buffers[a.active]
+	return a.currentEditorBuffer().text
 }
 
 func (a *App) addBuffer(current *buffer.Buffer) {
 	current.SetHistoryLimit(a.historyLimit)
-	a.buffers = append(a.buffers, current)
+	a.buffers = append(a.buffers, a.newEditorBuffer(current))
 	a.active = len(a.buffers) - 1
-	a.highlights[current] = syntax.New(current.Path())
 }
 
 func (a *App) open(path string) error {
@@ -205,10 +208,12 @@ func (a *App) open(path string) error {
 	if err != nil {
 		return err
 	}
-	for index, current := range a.buffers {
+	for index, editorBuffer := range a.buffers {
+		current := editorBuffer.text
 		if current.Path() == absolute {
 			a.active = index
 			a.CloseSidebar()
+			a.activateCurrentMode()
 			return nil
 		}
 	}
@@ -222,17 +227,22 @@ func (a *App) open(path string) error {
 	a.leftColumn = 0
 	a.runHooks("open")
 	a.notifyLSPDidOpen(opened)
+	a.activateCurrentMode()
 	return nil
 }
 
 func (a *App) pollChanges() {
+	if a.showFiles {
+		a.syncFileBrowser()
+	}
 	if changed, err := a.extensions.reloadIfChanged(); err != nil {
 		a.message = err.Error()
 	} else if changed {
 		a.applyExtensions()
 		a.message = "extensions reloaded"
 	}
-	for _, current := range a.buffers {
+	for _, editorBuffer := range a.buffers {
+		current := editorBuffer.text
 		if !current.HasExternalChange() {
 			continue
 		}
@@ -244,7 +254,8 @@ func (a *App) pollChanges() {
 			a.message = err.Error()
 			continue
 		}
-		a.highlights[current] = syntax.New(current.Path())
+		editorBuffer.highlighter = a.highlighterForBuffer(current)
+		a.notifyLSPFullChange(current)
 		if current == a.current() {
 			a.topLine = 0
 		}
@@ -286,8 +297,9 @@ func (a *App) applyExtensions() {
 			a.historyLimit = limit
 		}
 	}
-	for _, current := range a.buffers {
-		if a.terminals[current] == nil {
+	for _, editorBuffer := range a.buffers {
+		current := editorBuffer.text
+		if editorBuffer.terminal == nil {
 			current.SetHistoryLimit(a.historyLimit)
 		}
 	}
@@ -301,7 +313,11 @@ func (a *App) handleServerEvent(event serverEvent) {
 		a.startDebugConfiguration(event.debugReady)
 	}
 	if event.path != "" {
-		a.diagnostics[event.path] = event.diagnostics
+		for _, current := range a.buffers {
+			if current.text.Path() == event.path {
+				current.diagnostics = event.diagnostics
+			}
+		}
 	}
 	if event.message != "" {
 		a.message = event.message
@@ -339,8 +355,16 @@ func (a *App) handleServerEvent(event serverEvent) {
 	}
 }
 
-func workspaceFiles(root string) []string {
-	files := make([]string, 0, 256)
+type workspaceContents struct {
+	files       []string
+	directories []string
+}
+
+func scanWorkspace(root string) workspaceContents {
+	contents := workspaceContents{
+		files:       make([]string, 0, 256),
+		directories: make([]string, 0, 64),
+	}
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -349,29 +373,37 @@ func workspaceFiles(root string) []string {
 			return filepath.SkipDir
 		}
 		if entry.IsDir() {
+			if path != root {
+				if relative, relativeErr := filepath.Rel(root, path); relativeErr == nil {
+					contents.directories = append(contents.directories, relative)
+				}
+			}
 			return nil
 		}
 		relative, err := filepath.Rel(root, path)
 		if err == nil {
-			files = append(files, relative)
+			contents.files = append(contents.files, relative)
 		}
-		if len(files) >= 10000 {
+		if len(contents.files) >= 10000 {
 			return filepath.SkipAll
 		}
 		return nil
 	})
-	sort.Strings(files)
-	return files
+	sort.Strings(contents.files)
+	sort.Strings(contents.directories)
+	return contents
 }
 
 func defaultBindings() map[string]string {
 	bindings := map[string]string{
-		"ctrl-p":     "command.palette",
-		"ctrl-q":     "editor.quit",
-		"ctrl-space": "completion.show",
-		"alt-.":      "lsp.definition",
-		"alt-j":      "cursor.add-below",
-		"alt-f":      "view.files",
+		"ctrl-p":       "command.palette",
+		"ctrl-q":       "editor.quit",
+		"ctrl-r":       "file.rename",
+		"ctrl-shift-n": "file.new",
+		"ctrl-space":   "completion.show",
+		"alt-.":        "lsp.definition",
+		"alt-j":        "cursor.add-below",
+		"alt-f":        "view.files",
 	}
 	for key, command := range platformBindings() {
 		bindings[key] = command
@@ -465,7 +497,7 @@ func (a *App) handleEvent(event terminal.Event) error {
 			return nil
 		}
 	}
-	if terminalBuffer := a.terminals[a.current()]; terminalBuffer != nil {
+	if terminalBuffer := a.currentEditorBuffer().terminal; terminalBuffer != nil {
 		return a.handleTerminalEvent(event, terminalBuffer)
 	}
 	switch event.Key {
@@ -474,7 +506,7 @@ func (a *App) handleEvent(event terminal.Event) error {
 			return nil
 		}
 		a.insertTyped(event.Rune)
-		if isCompletionRune(event.Rune) && strings.EqualFold(filepath.Ext(a.current().Path()), ".go") {
+		if isCompletionRune(event.Rune) && a.hasLanguageServerForCurrentMode() {
 			a.requestLSPCompletion()
 		}
 	case terminal.KeyEnter:
@@ -483,12 +515,12 @@ func (a *App) handleEvent(event terminal.Event) error {
 		a.insert([]byte("    "))
 	case terminal.KeyBackspace:
 		a.backspace()
-		if strings.EqualFold(filepath.Ext(a.current().Path()), ".go") {
+		if a.hasLanguageServerForCurrentMode() {
 			a.requestLSPCompletion()
 		}
 	case terminal.KeyDelete:
 		a.deleteForward()
-		if strings.EqualFold(filepath.Ext(a.current().Path()), ".go") {
+		if a.hasLanguageServerForCurrentMode() {
 			a.requestLSPCompletion()
 		}
 	case terminal.KeyUp:
@@ -554,7 +586,7 @@ func (a *App) isTypingEvent(event terminal.Event) bool {
 	if a.prefix || a.minibuffer != nil || (a.palette != nil && !a.palette.completion) {
 		return false
 	}
-	if a.showFiles && a.browser.focused || a.sidebar != nil || a.terminals[a.current()] != nil {
+	if a.showFiles && a.browser.focused || a.sidebar != nil || a.currentEditorBuffer().terminal != nil {
 		return false
 	}
 	return a.bindings[keyName(event)] == ""
@@ -675,7 +707,7 @@ func (a *App) applyEdits(edits []edit) {
 		cursors[change.cursor] = buffer.Cursor{Anchor: point, Point: point}
 	}
 	current.SetCursors(cursors)
-	a.highlights[current].Invalidate(changedLine)
+	a.editorBufferFor(current).highlighter.Invalidate(changedLine)
 	a.notifyLSPChanges(current, changes)
 	a.ensureCursorVisible()
 }
