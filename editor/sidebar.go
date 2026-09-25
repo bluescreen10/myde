@@ -1,6 +1,8 @@
 package editor
 
 import (
+	"time"
+
 	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/terminal"
 )
@@ -12,19 +14,28 @@ type sidebarRow struct {
 }
 
 type sidebarPanel struct {
-	title    string
-	rows     []sidebarRow
-	selected int
-	top      int
-	help     []plugin.KeyHelp
-	onAction func(plugin.Action, plugin.SidebarItem) error
+	title           string
+	rows            []sidebarRow
+	selected        int
+	top             int
+	help            []plugin.KeyHelp
+	onAction        func(plugin.Action, plugin.SidebarItem) error
+	onRefresh       func() (plugin.Sidebar, error)
+	refreshInterval time.Duration
+	nextRefresh     time.Time
+	refreshing      bool
 }
 
 func newSidebarPanel(sidebar plugin.Sidebar) *sidebarPanel {
 	panel := &sidebarPanel{
-		title:    sidebar.Title,
-		help:     append([]plugin.KeyHelp(nil), sidebar.Help...),
-		onAction: sidebar.OnAction,
+		title:           sidebar.Title,
+		help:            append([]plugin.KeyHelp(nil), sidebar.Help...),
+		onAction:        sidebar.OnAction,
+		onRefresh:       sidebar.OnRefresh,
+		refreshInterval: sidebar.RefreshInterval,
+	}
+	if panel.onRefresh != nil && panel.refreshInterval > 0 {
+		panel.nextRefresh = time.Now().Add(panel.refreshInterval)
 	}
 	for _, section := range sidebar.Sections {
 		panel.rows = append(panel.rows, sidebarRow{title: section.Title})
@@ -39,13 +50,21 @@ func newSidebarPanel(sidebar plugin.Sidebar) *sidebarPanel {
 	panel.selected = panel.firstSelectable()
 	if sidebar.SelectedValue != "" {
 		for index, row := range panel.rows {
-			if row.set && row.item.Value == sidebar.SelectedValue {
+			if row.set && row.item.Value == sidebar.SelectedValue &&
+				(sidebar.SelectedKind == "" || row.item.Kind == sidebar.SelectedKind) {
 				panel.selected = index
 				break
 			}
 		}
 	}
 	return panel
+}
+
+func (p *sidebarPanel) selectedItem() (plugin.SidebarItem, bool) {
+	if p.selected < 0 || p.selected >= len(p.rows) || !p.rows[p.selected].set {
+		return plugin.SidebarItem{}, false
+	}
+	return p.rows[p.selected].item, true
 }
 
 func (p *sidebarPanel) firstSelectable() int {

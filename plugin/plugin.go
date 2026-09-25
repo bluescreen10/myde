@@ -1,6 +1,8 @@
 // Package plugin defines the boundary between myde and editor plugins.
 package plugin
 
+import "time"
+
 // Command handles a named editor command and its unparsed arguments.
 type Command func(arguments string) error
 
@@ -68,11 +70,14 @@ type Mode struct {
 
 // Sidebar describes an ephemeral, keyboard-driven panel on the left.
 type Sidebar struct {
-	Title         string
-	Sections      []SidebarSection
-	SelectedValue string
-	Help          []KeyHelp
-	OnAction      func(action Action, item SidebarItem) error
+	Title           string
+	Sections        []SidebarSection
+	SelectedValue   string
+	SelectedKind    string
+	Help            []KeyHelp
+	OnAction        func(action Action, item SidebarItem) error
+	RefreshInterval time.Duration
+	OnRefresh       func() (Sidebar, error)
 }
 
 // SidebarSection groups related panel items under a heading.
@@ -83,11 +88,23 @@ type SidebarSection struct {
 
 // SidebarItem is one selectable row in a sidebar.
 type SidebarItem struct {
-	Label  string
-	Detail string
-	Value  string
-	Kind   string
+	Label      string
+	Detail     string
+	DetailTone Tone
+	Value      string
+	Kind       string
+	Data       string
 }
+
+// Tone gives text a semantic theme color.
+type Tone string
+
+const (
+	ToneDefault Tone = ""
+	ToneSuccess Tone = "success"
+	ToneWarning Tone = "warning"
+	ToneDanger  Tone = "danger"
+)
 
 // KeyHelp describes one shortcut shown in a sidebar footer.
 type KeyHelp struct {

@@ -52,6 +52,9 @@ type Theme struct {
 	Status               terminal.Color
 	StatusText           terminal.Color
 	Accent               terminal.Color
+	Success              terminal.Color
+	Warning              terminal.Color
+	Danger               terminal.Color
 	Error                terminal.Color
 	Diagnostic           terminal.Color
 	Panel                terminal.Color
@@ -101,6 +104,9 @@ var requiredThemeColors = []string{
 	"status",
 	"statustext",
 	"accent",
+	"success",
+	"warning",
+	"danger",
 	"error",
 	"diagnostic",
 	"panel",
@@ -282,6 +288,12 @@ func (t *Theme) setColor(name, value string) error {
 		t.StatusText = parsed
 	case "accent":
 		t.Accent = parsed
+	case "success":
+		t.Success = parsed
+	case "warning":
+		t.Warning = parsed
+	case "danger":
+		t.Danger = parsed
 	case "error":
 		t.Error = parsed
 	case "diagnostic":

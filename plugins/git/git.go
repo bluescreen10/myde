@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bluescreen10/myde/plugin"
 )
@@ -58,43 +59,60 @@ func (g *gitPlugin) Load(host plugin.Host) error {
 }
 
 func (g *gitPlugin) stageCommand(arguments string) error {
-	return g.showStagePanel(strings.TrimSpace(arguments))
+	return g.showStagePanel("", strings.TrimSpace(arguments))
 }
 
-func (g *gitPlugin) showStagePanel(selected string) error {
+func (g *gitPlugin) showStagePanel(selectedKind, selectedValue string) error {
 	states, err := g.status()
 	if err != nil {
 		return err
 	}
+	g.host.OpenSidebar(g.stageSidebar(states, selectedKind, selectedValue))
+	return nil
+}
+
+func (g *gitPlugin) stageSidebar(states []fileState, selectedKind, selectedValue string) plugin.Sidebar {
 	unstaged := make([]plugin.SidebarItem, 0)
 	staged := make([]plugin.SidebarItem, 0)
 	for _, state := range states {
 		if state.unstaged {
+			status, tone := displayStatus(state, false)
 			unstaged = append(unstaged, plugin.SidebarItem{
-				Label: state.path, Detail: state.status, Value: state.path, Kind: unstagedKind,
+				Label: state.path, Detail: status, DetailTone: tone, Value: state.path, Kind: unstagedKind,
+				Data: state.status,
 			})
 		}
 		if state.staged {
+			status, tone := displayStatus(state, true)
 			staged = append(staged, plugin.SidebarItem{
-				Label: state.path, Detail: state.status, Value: state.path, Kind: stagedKind,
+				Label: state.path, Detail: status, DetailTone: tone, Value: state.path, Kind: stagedKind,
+				Data: state.status,
 			})
 		}
 	}
-	g.host.OpenSidebar(plugin.Sidebar{
+	return plugin.Sidebar{
 		Title: "Git Changes",
 		Sections: []plugin.SidebarSection{
 			{Title: "Unstaged", Items: unstaged},
 			{Title: "Staged", Items: staged},
 		},
-		SelectedValue: selected,
+		SelectedValue: selectedValue,
+		SelectedKind:  selectedKind,
 		Help: []plugin.KeyHelp{
 			{Key: "+", Label: "stage"},
 			{Key: "-", Label: "unstage"},
 			{Key: "Enter", Label: "diff"},
 		},
-		OnAction: g.handleStageAction,
-	})
-	return nil
+		OnAction:        g.handleStageAction,
+		RefreshInterval: time.Second,
+		OnRefresh: func() (plugin.Sidebar, error) {
+			updated, err := g.status()
+			if err != nil {
+				return plugin.Sidebar{}, err
+			}
+			return g.stageSidebar(updated, "", ""), nil
+		},
+	}
 }
 
 func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.SidebarItem) error {
@@ -106,9 +124,12 @@ func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.SidebarI
 		if _, err := g.run("add", "--", item.Value); err != nil {
 			return err
 		}
-		if err := g.showStagePanel(item.Value); err != nil {
+		states, err := g.status()
+		if err != nil {
 			return err
 		}
+		kind, selected := nextSelection(states, unstagedKind, item.Value)
+		g.host.OpenSidebar(g.stageSidebar(states, kind, selected))
 		g.host.SetMessage("staged " + item.Value)
 	case plugin.Remove:
 		if item.Kind != stagedKind {
@@ -117,14 +138,66 @@ func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.SidebarI
 		if _, err := g.run("reset", "-q", "--", item.Value); err != nil {
 			return err
 		}
-		if err := g.showStagePanel(item.Value); err != nil {
+		states, err := g.status()
+		if err != nil {
 			return err
 		}
+		kind, selected := nextSelection(states, stagedKind, item.Value)
+		g.host.OpenSidebar(g.stageSidebar(states, kind, selected))
 		g.host.SetMessage("unstaged " + item.Value)
 	case plugin.Activate:
-		return g.openDiff(item.Kind == stagedKind, item.Value, item.Detail == "??")
+		return g.openDiff(item.Kind == stagedKind, item.Value, item.Data == "??")
 	}
 	return nil
+}
+
+func displayStatus(state fileState, staged bool) (string, plugin.Tone) {
+	status := byte(' ')
+	if staged {
+		status = state.status[0]
+	} else {
+		status = state.status[1]
+		if state.status == "??" {
+			status = 'A'
+		}
+	}
+	switch status {
+	case 'A', '?':
+		return "A", plugin.ToneSuccess
+	case 'D':
+		return "D", plugin.ToneDanger
+	case 'R':
+		return "R", plugin.ToneWarning
+	default:
+		return "M", plugin.ToneWarning
+	}
+}
+
+func nextSelection(states []fileState, kind, after string) (string, string) {
+	candidates := make([]string, 0, len(states))
+	for _, state := range states {
+		if kind == unstagedKind && state.unstaged || kind == stagedKind && state.staged {
+			candidates = append(candidates, state.path)
+		}
+	}
+	for _, path := range candidates {
+		if path > after {
+			return kind, path
+		}
+	}
+	if len(candidates) > 0 {
+		return kind, candidates[len(candidates)-1]
+	}
+	other := unstagedKind
+	if kind == unstagedKind {
+		other = stagedKind
+	}
+	for _, state := range states {
+		if other == unstagedKind && state.unstaged || other == stagedKind && state.staged {
+			return other, state.path
+		}
+	}
+	return "", ""
 }
 
 func (g *gitPlugin) diffCommand(arguments string) error {

@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"bytes"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -22,6 +23,7 @@ func (a *App) registerCommands() {
 		"command.palette":         a.commandPalette,
 		"completion.show":         a.showCompletion,
 		"cursor.add-below":        a.addCursorBelow,
+		"cursor.add-next-match":   a.addCursorAtNextMatch,
 		"cursor.file-end":         a.moveToFileEnd,
 		"cursor.file-start":       a.moveToFileStart,
 		"cursor.line-end":         a.moveToLineEnd,
@@ -36,6 +38,7 @@ func (a *App) registerCommands() {
 		"debug.toggle-breakpoint": a.debugToggleBreakpoint,
 		"editor.quit":             a.quit,
 		"edit.cut":                a.cut,
+		"edit.copy":               a.copy,
 		"edit.paste":              a.paste,
 		"edit.redo":               a.redo,
 		"edit.undo":               a.undo,
@@ -143,16 +146,11 @@ func (a *App) commandPalette(arguments string) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	commands := make([]paletteItem, 0, len(names))
-	for _, name := range names {
-		commands = append(commands, paletteItem{label: name, value: name, kind: "command"})
-	}
-	files := make([]paletteItem, 0, len(a.files))
-	for _, path := range a.files {
-		files = append(files, paletteItem{label: path, value: path, kind: "file"})
-	}
+	commands := paletteItemsByRecent(names, a.recentCommands, "command")
+	files := paletteItemsByRecent(a.files, a.recentFiles, "file")
 	a.palette = &palette{
-		title: "Command Palette",
+		title:           "Command Palette",
+		hideQueryMarker: true,
 		source: func(query string) ([]paletteItem, string) {
 			if strings.HasPrefix(query, ">") {
 				return commands, strings.TrimSpace(strings.TrimPrefix(query, ">"))
@@ -161,6 +159,7 @@ func (a *App) commandPalette(arguments string) error {
 		},
 		onChoose: func(item paletteItem) {
 			if item.kind == "command" {
+				a.recentCommands = promoteRecent(a.recentCommands, item.value)
 				if err := a.execute(item.value); err != nil {
 					a.message = err.Error()
 				}
@@ -179,16 +178,59 @@ func (a *App) openFilePalette(arguments string) error {
 	if arguments != "" {
 		return a.open(arguments)
 	}
-	items := make([]paletteItem, 0, len(a.files))
-	for _, path := range a.files {
-		items = append(items, paletteItem{label: path, value: path, kind: "file"})
-	}
+	items := paletteItemsByRecent(a.files, a.recentFiles, "file")
 	a.choose("Open file", items, func(item paletteItem) {
 		if err := a.open(item.value); err != nil {
 			a.message = err.Error()
 		}
 	})
 	return nil
+}
+
+func (a *App) recordRecentFile(path string) {
+	relative, err := filepath.Rel(a.root, path)
+	if err != nil || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+		return
+	}
+	a.recentFiles = promoteRecent(a.recentFiles, filepath.Clean(relative))
+}
+
+func promoteRecent(values []string, value string) []string {
+	result := make([]string, 0, min(32, len(values)+1))
+	result = append(result, value)
+	for _, current := range values {
+		if current == value {
+			continue
+		}
+		result = append(result, current)
+		if len(result) == 32 {
+			break
+		}
+	}
+	return result
+}
+
+func paletteItemsByRecent(values, recent []string, kind string) []paletteItem {
+	available := make(map[string]bool, len(values))
+	for _, value := range values {
+		available[value] = true
+	}
+	items := make([]paletteItem, 0, len(values))
+	added := make(map[string]bool, len(values))
+	for _, value := range recent {
+		if !available[value] || added[value] {
+			continue
+		}
+		items = append(items, paletteItem{label: value, value: value, kind: kind})
+		added[value] = true
+	}
+	for _, value := range values {
+		if added[value] {
+			continue
+		}
+		items = append(items, paletteItem{label: value, value: value, kind: kind})
+	}
+	return items
 }
 
 func (a *App) save(arguments string) error {
@@ -220,7 +262,6 @@ func (a *App) save(arguments string) error {
 	a.currentEditorBuffer().highlighter = a.highlighterForBuffer(current)
 	a.activateCurrentMode()
 	a.notifyLSPDidOpen(current)
-	a.topLine = 0
 	a.message = "saved " + current.Name()
 	a.runHooks("save")
 	return nil
@@ -529,6 +570,65 @@ func (a *App) addCursorBelow(arguments string) error {
 	current.SetCursors(cursors)
 	a.message = fmt.Sprintf("%d cursors", len(cursors))
 	return nil
+}
+
+func (a *App) addCursorAtNextMatch(arguments string) error {
+	current := a.current()
+	cursors := current.Cursors()
+	if len(cursors) == 0 {
+		return nil
+	}
+	firstStart := min(current.Offset(cursors[0].Anchor), current.Offset(cursors[0].Point))
+	firstEnd := max(current.Offset(cursors[0].Anchor), current.Offset(cursors[0].Point))
+	if firstStart == firstEnd {
+		a.message = "select text before adding its next match"
+		return nil
+	}
+	needle := current.Slice(firstStart, firstEnd)
+	searchStart := firstEnd
+	selectedOffsets := make(map[int]bool, len(cursors))
+	selectedOffsets[firstStart] = true
+	for _, cursor := range cursors[1:] {
+		start := min(current.Offset(cursor.Anchor), current.Offset(cursor.Point))
+		end := max(current.Offset(cursor.Anchor), current.Offset(cursor.Point))
+		searchStart = max(searchStart, end)
+		if bytes.Equal(current.Slice(start, end), needle) {
+			selectedOffsets[start] = true
+		}
+	}
+	content := current.Bytes()
+	match := nextUnselectedMatch(content, needle, searchStart, len(content), selectedOffsets)
+	if match < 0 {
+		match = nextUnselectedMatch(content, needle, 0, searchStart, selectedOffsets)
+	}
+	if match < 0 {
+		a.message = "no other match"
+		return nil
+	}
+	start := current.Point(match)
+	end := current.Point(match + len(needle))
+	cursors = append(cursors, buffer.Cursor{Anchor: start, Point: end})
+	current.SetCursors(cursors)
+	a.message = fmt.Sprintf("%d cursors", len(cursors))
+	a.ensureCursorVisible()
+	return nil
+}
+
+func nextUnselectedMatch(content, needle []byte, start, end int, selected map[int]bool) int {
+	start = min(max(0, start), len(content))
+	end = min(max(start, end), len(content))
+	for start < end {
+		relative := bytes.Index(content[start:end], needle)
+		if relative < 0 {
+			return -1
+		}
+		match := start + relative
+		if !selected[match] {
+			return match
+		}
+		start = match + max(1, len(needle))
+	}
+	return -1
 }
 
 func (a *App) moveToLineStart(arguments string) error {

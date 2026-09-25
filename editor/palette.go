@@ -25,6 +25,7 @@ type palette struct {
 	onChoose           func(paletteItem)
 	onSubmit           func(string)
 	source             func(string) ([]paletteItem, string)
+	hideQueryMarker    bool
 	completion         bool
 	localCompletion    bool
 	completionRevision uint64

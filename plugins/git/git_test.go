@@ -145,6 +145,72 @@ func TestPluginStagesDiffsUnstagesAndCommits(t *testing.T) {
 	}
 }
 
+func TestStagePanelSelectsNextFileAndCanRefresh(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	runGit(t, root, "init", "-q")
+	runGit(t, root, "config", "user.name", "Myde Test")
+	runGit(t, root, "config", "user.email", "myde@example.invalid")
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("before\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, root, "add", "a.txt", "b.txt")
+	runGit(t, root, "commit", "-qm", "initial")
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("after\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	host := &testHost{root: root, commands: make(map[string]plugin.Command)}
+	if err := gitplugin.New().Load(host); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.commands["git.stage"](""); err != nil {
+		t.Fatal(err)
+	}
+	first := sidebarItem(t, host.sidebar, "Unstaged", "a.txt")
+	if first.Detail != "M" || first.DetailTone != plugin.ToneWarning {
+		t.Fatalf("modified status = %+v", first)
+	}
+	if host.sidebar.OnRefresh == nil || host.sidebar.RefreshInterval <= 0 {
+		t.Fatal("stage panel has no background refresh")
+	}
+	if err := host.sidebar.OnAction(plugin.Add, first); err != nil {
+		t.Fatal(err)
+	}
+	if host.sidebar.SelectedKind != "unstaged" || host.sidebar.SelectedValue != "b.txt" {
+		t.Fatalf("selection after staging a.txt = %s/%s", host.sidebar.SelectedKind, host.sidebar.SelectedValue)
+	}
+	second := sidebarItem(t, host.sidebar, "Unstaged", "b.txt")
+	if err := host.sidebar.OnAction(plugin.Add, second); err != nil {
+		t.Fatal(err)
+	}
+	stagedA := sidebarItem(t, host.sidebar, "Staged", "a.txt")
+	if err := host.sidebar.OnAction(plugin.Remove, stagedA); err != nil {
+		t.Fatal(err)
+	}
+	if host.sidebar.SelectedKind != "staged" || host.sidebar.SelectedValue != "b.txt" {
+		t.Fatalf("selection after unstaging a.txt = %s/%s", host.sidebar.SelectedKind, host.sidebar.SelectedValue)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "c.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := host.sidebar.OnRefresh()
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := sidebarItem(t, refreshed, "Unstaged", "c.txt")
+	if added.Detail != "A" || added.DetailTone != plugin.ToneSuccess {
+		t.Fatalf("added status = %+v", added)
+	}
+}
+
 func sidebarItem(t *testing.T, sidebar plugin.Sidebar, sectionTitle, path string) plugin.SidebarItem {
 	t.Helper()
 	for _, section := range sidebar.Sections {

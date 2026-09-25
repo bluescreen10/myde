@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bluescreen10/myde/buffer"
+	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/syntax"
 	"github.com/bluescreen10/myde/terminal"
 )
@@ -49,8 +50,14 @@ func (a *App) render() error {
 	if a.palette != nil && !a.palette.completion {
 		left, top, panelWidth, _ := paletteBounds(width, statusRow)
 		count := fmt.Sprintf("%d / %d", min(a.palette.selected+1, len(a.palette.filtered)), len(a.palette.filtered))
-		queryWidth := max(0, panelWidth-displayWidth(count)-7)
-		cursorX = left + 3 + min(queryWidth, displayWidth(string(a.palette.query)))
+		prefixWidth := 2
+		if a.palette.hideQueryMarker {
+			prefixWidth = 0
+		}
+		inputX := left + 2 + prefixWidth
+		countX := left + panelWidth - displayWidth(count) - 2
+		queryWidth := max(0, countX-inputX-1)
+		cursorX = inputX + min(queryWidth, displayWidth(string(a.palette.query)))
 		cursorY = top + 1
 	}
 	if a.minibuffer != nil {
@@ -137,11 +144,25 @@ func (a *App) renderPluginSidebar(statusRow int) int {
 			style = selected
 			fillRow(a.screen, 1, y, sidebarWidth-2, style)
 		}
-		label := "  " + entry.item.Label
-		if entry.item.Detail != "" {
-			label += "  " + entry.item.Detail
+		detail := entry.item.Detail
+		detailWidth := displayWidth(detail)
+		labelWidth := sidebarWidth - 4
+		if detail != "" {
+			labelWidth -= detailWidth + 1
 		}
-		a.screen.Text(1, y, truncate(label, sidebarWidth-2), style)
+		a.screen.Text(2, y, truncate(entry.item.Label, max(0, labelWidth)), style)
+		if detail != "" {
+			detailStyle := style
+			switch entry.item.DetailTone {
+			case plugin.ToneSuccess:
+				detailStyle.Foreground = a.theme.Success
+			case plugin.ToneWarning:
+				detailStyle.Foreground = a.theme.Warning
+			case plugin.ToneDanger:
+				detailStyle.Foreground = a.theme.Danger
+			}
+			a.screen.Text(sidebarWidth-detailWidth-2, y, detail, detailStyle)
+		}
 	}
 
 	footerSeparator := panelHeight - 2
@@ -370,9 +391,16 @@ func (a *App) renderPalette(width, statusRow int) {
 	a.drawPanel(left, top, panelWidth, boxHeight, p.title, a.theme.Accent, panel, border)
 
 	count := fmt.Sprintf("%d / %d", min(p.selected+1, len(p.filtered)), len(p.filtered))
-	queryWidth := max(0, panelWidth-displayWidth(count)-7)
-	a.screen.Text(left+2, top+1, "› "+truncate(string(p.query), queryWidth), panel)
-	a.screen.Text(left+panelWidth-displayWidth(count)-2, top+1, count, border)
+	prefix := "› "
+	if p.hideQueryMarker {
+		prefix = ""
+	}
+	inputX := left + 2 + displayWidth(prefix)
+	countX := left + panelWidth - displayWidth(count) - 2
+	queryWidth := max(0, countX-inputX-1)
+	a.screen.Text(left+2, top+1, prefix, panel)
+	a.screen.Text(inputX, top+1, truncate(string(p.query), queryWidth), panel)
+	a.screen.Text(countX, top+1, count, border)
 	a.drawPanelSeparator(left, top+2, panelWidth, border)
 
 	rows := max(0, boxHeight-6)

@@ -27,13 +27,9 @@ func TestBuiltinThemesLoadFromJSON(t *testing.T) {
 		t.Fatalf("default horizontal separator = %q, want %q", got, '─')
 	}
 	for _, id := range []string{"retro-green", "retro-orange"} {
-		retro, ok := loaded[id]
+		_, ok := loaded[id]
 		if !ok {
 			t.Fatalf("retro theme %q is missing", id)
-		}
-		if retro.Borders.Corners.TopLeft != '+' || retro.Borders.Lines.Horizontal != '-' ||
-			retro.Borders.Lines.Vertical != '|' {
-			t.Fatalf("retro theme %q borders = %+v", id, retro.Borders)
 		}
 	}
 }

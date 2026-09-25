@@ -32,6 +32,12 @@ type diagnostic struct {
 	message   string
 }
 
+type sidebarRefreshEvent struct {
+	panel   *sidebarPanel
+	sidebar plugin.Sidebar
+	err     error
+}
+
 type serverEvent struct {
 	path               string
 	diagnostics        []diagnostic
@@ -46,6 +52,7 @@ type serverEvent struct {
 	debugReady         *protocol.DebugProcess
 	terminal           *shellBuffer
 	terminalOutput     string
+	sidebarRefresh     *sidebarRefreshEvent
 }
 
 // App is an interactive editor session.
@@ -62,6 +69,8 @@ type App struct {
 	historyLimit   int
 	files          []string
 	directories    []string
+	recentFiles    []string
+	recentCommands []string
 	showFiles      bool
 	browser        *fileBrowser
 	sidebar        *sidebarPanel
@@ -220,6 +229,7 @@ func (a *App) open(path string) error {
 		current := editorBuffer.text
 		if current.Path() == absolute {
 			a.active = index
+			a.recordRecentFile(absolute)
 			a.CloseSidebar()
 			a.activateCurrentMode()
 			return nil
@@ -230,6 +240,7 @@ func (a *App) open(path string) error {
 		return err
 	}
 	a.addBuffer(opened)
+	a.recordRecentFile(absolute)
 	a.CloseSidebar()
 	a.topLine = 0
 	a.leftColumn = 0
@@ -240,6 +251,7 @@ func (a *App) open(path string) error {
 }
 
 func (a *App) pollChanges() {
+	a.pollSidebarRefresh()
 	if a.showFiles {
 		a.syncFileBrowser()
 	}
@@ -272,6 +284,23 @@ func (a *App) pollChanges() {
 	if width, height, err := a.session.Size(); err == nil {
 		a.screen.Resize(width, height)
 	}
+}
+
+func (a *App) pollSidebarRefresh() {
+	panel := a.sidebar
+	if panel == nil || panel.onRefresh == nil || panel.refreshInterval <= 0 || panel.refreshing ||
+		time.Now().Before(panel.nextRefresh) {
+		return
+	}
+	panel.refreshing = true
+	panel.nextRefresh = time.Now().Add(panel.refreshInterval)
+	refresh := panel.onRefresh
+	go func() {
+		updated, err := refresh()
+		a.servers <- serverEvent{sidebarRefresh: &sidebarRefreshEvent{
+			panel: panel, sidebar: updated, err: err,
+		}}
+	}()
 }
 
 func (a *App) reloadExtensions() {
@@ -323,6 +352,22 @@ func (a *App) applyExtensions() {
 }
 
 func (a *App) handleServerEvent(event serverEvent) {
+	if refresh := event.sidebarRefresh; refresh != nil {
+		refresh.panel.refreshing = false
+		if refresh.panel == a.sidebar {
+			if refresh.err != nil {
+				a.message = refresh.err.Error()
+			} else {
+				if selected, ok := refresh.panel.selectedItem(); ok {
+					refresh.sidebar.SelectedValue = selected.Value
+					refresh.sidebar.SelectedKind = selected.Kind
+				}
+				replacement := newSidebarPanel(refresh.sidebar)
+				replacement.top = refresh.panel.top
+				a.sidebar = replacement
+			}
+		}
+	}
 	if event.terminal != nil {
 		a.finishTerminalCommand(event.terminal, event.terminalOutput)
 	}
@@ -451,7 +496,7 @@ func (a *App) handleEvent(event terminal.Event) error {
 			a.message = ""
 			return nil
 		}
-		a.cancelAction()
+		a.cancelCursorState()
 		return nil
 	}
 	if a.minibuffer != nil {
@@ -569,8 +614,16 @@ func (a *App) cancelAction() {
 	a.prefix = false
 	a.message = ""
 	a.completionEpoch++
+}
+
+func (a *App) cancelCursorState() {
+	a.message = ""
 	current := a.current()
 	cursors := current.Cursors()
+	if len(cursors) > 1 {
+		current.SetCursors(cursors[:1])
+		return
+	}
 	for index, cursor := range cursors {
 		cursors[index].Anchor = cursor.Point
 	}

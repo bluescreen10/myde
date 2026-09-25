@@ -7,6 +7,19 @@ import (
 	"github.com/bluescreen10/myde/buffer"
 )
 
+func (a *App) copy(arguments string) error {
+	selections := selectedText(a.current())
+	if len(selections) == 0 {
+		a.message = "nothing selected"
+		return nil
+	}
+	if err := writeSystemClipboard(strings.Join(selections, "\n")); err != nil {
+		return err
+	}
+	a.message = "copied selection"
+	return nil
+}
+
 func (a *App) cut(arguments string) error {
 	current := a.current()
 	if current.IsReadOnly() {

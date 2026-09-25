@@ -29,16 +29,17 @@ processes.
 |---|---|
 | `C-p` | file/command panel; prefix the query with `>` for commands |
 | `Cmd-S` (macOS) / `C-s` (other OSes) | save |
-| `Cmd-X/V/Z/Y` (macOS) / `C-x/v/z/y` (other OSes) | cut / paste / undo / redo |
+| `C-c/v/x` | copy / paste / cut through the system clipboard |
+| `Cmd-Z/Y` (macOS) / `C-z/y` (other OSes) | undo / redo |
 | `Cmd-F` (macOS) / `C-f` (other OSes) | search in the current buffer |
-| `C-x C-f`, `C-x C-s`, `C-x b`, `C-x k` | Emacs open/save/switch/close chords on macOS |
 | `C-q` | quit; modified buffers offer Save All, Discard All, or Cancel |
 | `C-1` … `C-9` | switch directly to buffer 1 … 9 |
 | `C-Shift-N` | create a file in the focused explorer directory, or a new buffer in the editor |
 | `C-r` | rename the selected file while the file explorer is focused |
 | `Shift-Arrow` | extend the text selection |
-| `Cmd-Left` / `Cmd-Right` | beginning / end of line |
-| `Cmd-Up` / `Cmd-Down` | beginning / end of file |
+| `C-Left` / `C-Right` (macOS) | beginning / end of line |
+| `C-Up` / `C-Down` (macOS) | beginning / end of file |
+| `C-d` (macOS) | add the next occurrence of the selected text as another cursor |
 | `M-j` | add a cursor on the next line |
 | `M-f` | open, focus, or hide the file explorer |
 | `M-.` | go to definition through the active language server |
@@ -47,8 +48,9 @@ processes.
 Arrow, Home, End, Page Up, Page Down, Backspace, Delete, Enter, and Tab work in
 the editing area. Shift with navigation extends a selection; typing replaces
 selected text. Undo groups consecutively typed words instead of removing one
-character at a time. Typing filters every command palette with fuzzy matching. `Escape`
-cancels the current panel, prompt, key sequence, or action. Saving an unnamed
+character at a time. Typing filters every command palette with fuzzy matching.
+`Escape` first removes additional cursors and a second press clears the remaining
+selection. It also cancels the current panel, prompt, key sequence, or action. Saving an unnamed
 buffer opens its filename prompt in the minibuffer below the modeline.
 Closing a modified file opens a Save, Discard, or Cancel confirmation; quitting
 with modified buffers opens a Save All, Discard All, or Cancel confirmation.
@@ -56,20 +58,8 @@ Clean new buffers close immediately without being treated as modified.
 Control-number switching uses the CSI-u keyboard protocol requested by myde;
 `M-1` through `M-9` provide the same bindings on older terminals.
 
-Ghostty translates `Cmd-Left` and `Cmd-Right` to `C-a` and `C-e`; myde accepts
-both forms. It also negotiates enhanced keyboard reporting for modified arrows,
-including Kitty protocol event-type and alternate-key fields.
-
-Ghostty's default `Cmd-Up` and `Cmd-Down` actions do not send input to terminal
-programs. To use those keys in myde, map them to their CSI-u representations in
-the Ghostty configuration:
-
-```ini
-keybind = super+arrow_up=csi:1;9A
-keybind = super+arrow_down=csi:1;9B
-keybind = super+shift+arrow_up=csi:1;10A
-keybind = super+shift+arrow_down=csi:1;10B
-```
+Myde negotiates enhanced keyboard reporting for modified arrows, including
+Kitty protocol event-type and alternate-key fields.
 
 The file explorer is a navigable tree on the left. Type while it is focused to
 filter paths, use Up/Down to select entries, Left/Right to collapse or expand
@@ -84,11 +74,14 @@ external tools without losing its current filter or expanded folders.
 
 Open the centered panel with `C-p`. It searches workspace files by default; put
 `>` at the start of the query to search commands. The panel keeps the query,
-results, and keyboard help in separate bordered regions. Important commands include:
+results, and keyboard help in separate bordered regions. Recently opened files
+and recently chosen commands appear first. Important commands include:
 
 - `search.project` — fast recursive search with ripgrep.
 - `git.stage` — open the ephemeral Git Changes sidebar. It separates unstaged
   and staged files; `+` stages, `-` unstages, and Enter opens a read-only diff.
+  The list refreshes in the background, advances to the next file after an
+  action, and colors its right-aligned status as success, warning, or danger.
 - `git.diff` and `git.diff staged` — open workspace changes in a read-only
   buffer.
 - `git.commit` — open a centered commit-message prompt and create the commit.
@@ -157,6 +150,9 @@ color panel = #252526
 color panelborder = #5A5A5A
 color diagnostic = #F14C4C
 color diagnosticbackground = #3A2427
+color success = #4EC9B0
+color warning = #D7BA7D
+color danger = #F14C4C
 
 # File buffers keep 1,000 undo entries by default. Zero disables history.
 set history-limit = 2000
