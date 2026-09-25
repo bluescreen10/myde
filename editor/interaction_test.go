@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,37 @@ import (
 	"github.com/bluescreen10/myde/syntax"
 	"github.com/bluescreen10/myde/terminal"
 )
+
+func TestDefaultPageBindingsAndCommands(t *testing.T) {
+	bindings := defaultBindings()
+	if bindings["ctrl-shift-f"] != "search.project" {
+		t.Fatalf("global search binding = %q", bindings["ctrl-shift-f"])
+	}
+	if bindings["alt-shift-up"] != "cursor.page-up" ||
+		bindings["alt-shift-down"] != "cursor.page-down" {
+		t.Fatalf("page bindings = %q, %q", bindings["alt-shift-up"], bindings["alt-shift-down"])
+	}
+	current := buffer.New()
+	current.Insert(0, []byte(strings.Repeat("line\n", 30)))
+	point := buffer.Point{Line: 20}
+	current.SetCursors([]buffer.Cursor{{Anchor: point, Point: point}})
+	app := &App{
+		buffers: []*editorBuffer{{text: current}},
+		screen:  terminal.NewScreen(io.Discard, 80, 10),
+	}
+	if err := app.pageUp(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := current.Cursors()[0].Point.Line; got != 13 {
+		t.Fatalf("page up line = %d, want 13", got)
+	}
+	if err := app.pageDown(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := current.Cursors()[0].Point.Line; got != 20 {
+		t.Fatalf("page down line = %d, want 20", got)
+	}
+}
 
 func TestCommandPaletteHasNoMarkerAndOrdersRecentItemsFirst(t *testing.T) {
 	app := &App{
@@ -74,6 +106,33 @@ func TestAddNextMatchAndEscapeCursorLayers(t *testing.T) {
 	cursors = current.Cursors()
 	if len(cursors) != 1 || cursors[0].Anchor != cursors[0].Point {
 		t.Fatalf("second escape cursors = %+v", cursors)
+	}
+}
+
+func TestMultipleCursorsUseSoftwareCursorPositions(t *testing.T) {
+	current := buffer.New()
+	current.Insert(0, []byte("abc\ndef"))
+	current.SetCursors([]buffer.Cursor{
+		{Point: buffer.Point{Line: 0, Column: 1}},
+		{Point: buffer.Point{Line: 1, Column: 2}},
+	})
+	app := &App{
+		buffers: []*editorBuffer{{text: current}},
+		screen:  terminal.NewScreen(io.Discard, 80, 24),
+		browser: newFileBrowser("", nil, nil),
+	}
+	if !app.usesSoftwareCursors() {
+		t.Fatal("multiple editor cursors did not select software rendering")
+	}
+	firstX, firstY := app.bufferPointPosition(current.Cursors()[0].Point, 0)
+	secondX, secondY := app.bufferPointPosition(current.Cursors()[1].Point, 0)
+	if firstX != 4 || firstY != 1 || secondX != 5 || secondY != 2 {
+		t.Fatalf("cursor positions = (%d,%d), (%d,%d)", firstX, firstY, secondX, secondY)
+	}
+
+	app.minibuffer = &minibuffer{}
+	if app.usesSoftwareCursors() {
+		t.Fatal("software cursors remained active while the minibuffer had focus")
 	}
 }
 

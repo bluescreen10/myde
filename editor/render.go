@@ -17,6 +17,7 @@ func (a *App) render() error {
 	base := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Background}
 	a.screen.Clear(base)
 	if width < 20 || height < 4 {
+		a.screen.SetCursorVisible(true)
 		a.screen.Text(0, 0, "terminal is too small", base)
 		return a.screen.Flush(0, 0)
 	}
@@ -73,6 +74,16 @@ func (a *App) render() error {
 		cursorX = 2
 		cursorY = 2 + a.sidebar.selected - a.sidebar.top
 	}
+	if a.palette == nil && a.minibuffer == nil && a.workspaceSearch != nil {
+		visibleQuery := trailingDisplayText(a.workspaceSearch.query, max(0, sidebarWidth-5))
+		cursorX = min(sidebarWidth-2, 3+displayWidth(visibleQuery))
+		cursorY = 2
+	}
+	softwareCursors := a.usesSoftwareCursors()
+	a.screen.SetCursorVisible(!softwareCursors)
+	if softwareCursors && a.cursorBlinkOn {
+		a.renderSoftwareCursors(sidebarWidth, statusRow)
+	}
 	return a.screen.Flush(cursorX, cursorY)
 }
 
@@ -103,6 +114,9 @@ func (a *App) renderTabs(width int) {
 }
 
 func (a *App) renderSidebar(statusRow int) int {
+	if a.workspaceSearch != nil {
+		return a.renderWorkspaceSearch(statusRow)
+	}
 	if a.sidebar != nil {
 		return a.renderPluginSidebar(statusRow)
 	}
@@ -267,6 +281,11 @@ func (a *App) renderFiles(statusRow int) int {
 
 func fileSidebarWidth(width int) int {
 	sidebarWidth := min(42, max(24, width/3))
+	return min(sidebarWidth, max(12, width-20))
+}
+
+func searchSidebarWidth(width int) int {
+	sidebarWidth := min(72, max(36, width/2))
 	return min(sidebarWidth, max(12, width-20))
 }
 
@@ -698,15 +717,46 @@ func wrapText(value string, width int) []string {
 }
 
 func (a *App) cursorPosition(sidebarWidth, statusRow int) (int, int) {
+	x, y := a.bufferPointPosition(a.current().Cursors()[0].Point, sidebarWidth)
+	width, _ := a.screen.Size()
+	return max(0, min(width-1, x)), max(0, min(statusRow-1, y))
+}
+
+func (a *App) bufferPointPosition(point buffer.Point, sidebarWidth int) (int, int) {
 	current := a.current()
-	point := current.Cursors()[0].Point
 	lineNumberWidth := len(strconv.Itoa(max(1, current.LineCount()))) + 2
 	line := []rune(string(current.Line(point.Line)))
 	column := min(point.Column, len(line))
 	x := sidebarWidth + lineNumberWidth + sourceDisplayWidth(line[:column]) - a.leftColumn
 	y := point.Line - a.topLine + 1
+	return x, y
+}
+
+func (a *App) usesSoftwareCursors() bool {
+	if len(a.current().Cursors()) < 2 || a.minibuffer != nil || a.sidebar != nil || a.workspaceSearch != nil {
+		return false
+	}
+	if a.palette != nil && !a.palette.completion {
+		return false
+	}
+	return !a.showFiles || !a.browser.focused
+}
+
+func (a *App) renderSoftwareCursors(sidebarWidth, statusRow int) {
 	width, _ := a.screen.Size()
-	return max(0, min(width-1, x)), max(0, min(statusRow-1, y))
+	lineNumberWidth := len(strconv.Itoa(max(1, a.current().LineCount()))) + 2
+	textX := sidebarWidth + lineNumberWidth
+	style := terminal.Style{
+		Foreground: a.theme.Background,
+		Background: a.theme.Cursor,
+	}
+	for _, cursor := range a.current().Cursors() {
+		x, y := a.bufferPointPosition(cursor.Point, sidebarWidth)
+		if x < textX || x >= width || y < 1 || y >= statusRow {
+			continue
+		}
+		a.screen.Restyle(x, y, style)
+	}
 }
 
 func (a *App) isSelected(line, column int) bool {

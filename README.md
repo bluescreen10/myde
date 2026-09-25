@@ -28,20 +28,22 @@ processes.
 | Key | Action |
 |---|---|
 | `C-p` | file/command panel; prefix the query with `>` for commands |
-| `Cmd-S` (macOS) / `C-s` (other OSes) | save |
+| `M-s` (macOS) / `C-s` (other OSes) | save |
 | `C-c/v/x` | copy / paste / cut through the system clipboard |
-| `Cmd-Z/Y` (macOS) / `C-z/y` (other OSes) | undo / redo |
-| `Cmd-F` (macOS) / `C-f` (other OSes) | search in the current buffer |
-| `C-q` | quit; modified buffers offer Save All, Discard All, or Cancel |
+| `C-z/y` | undo / redo |
+| `M-f` (macOS) / `C-f` (other OSes) | search in the current buffer |
+| `C-Shift-F` | search across all files under the workspace root |
+| `M-q` | quit; modified buffers offer Save All, Discard All, or Cancel |
 | `C-1` … `C-9` | switch directly to buffer 1 … 9 |
 | `C-Shift-N` | create a file in the focused explorer directory, or a new buffer in the editor |
 | `C-r` | rename the selected file while the file explorer is focused |
 | `Shift-Arrow` | extend the text selection |
-| `C-Left` / `C-Right` (macOS) | beginning / end of line |
-| `C-Up` / `C-Down` (macOS) | beginning / end of file |
-| `C-d` (macOS) | add the next occurrence of the selected text as another cursor |
+| `M-Left` / `M-Right` (macOS) | beginning / end of line |
+| `M-Up` / `M-Down` (macOS) | beginning / end of file |
+| `M-Shift-Up` / `M-Shift-Down` | page up / page down |
+| `M-d` (macOS) | add the next occurrence of the selected text as another cursor |
 | `M-j` | add a cursor on the next line |
-| `M-f` | open, focus, or hide the file explorer |
+| `M-b` | open, focus, or hide the file explorer |
 | `M-.` | go to definition through the active language server |
 | `C-Space` | completion (LSP plus local words) |
 
@@ -61,6 +63,19 @@ Control-number switching uses the CSI-u keyboard protocol requested by myde;
 Myde negotiates enhanced keyboard reporting for modified arrows, including
 Kitty protocol event-type and alternate-key fields.
 
+Some macOS terminal defaults translate Option-Left/Right into `Esc b`/`Esc f`
+before applications can identify the arrow key. In Ghostty, preserve the arrow
+and modifier with explicit CSI bindings:
+
+```ini
+keybind = alt+arrow_left=csi:1;3D
+keybind = alt+arrow_right=csi:1;3C
+keybind = alt+arrow_up=csi:1;3A
+keybind = alt+arrow_down=csi:1;3B
+keybind = alt+shift+arrow_up=csi:1;4A
+keybind = alt+shift+arrow_down=csi:1;4B
+```
+
 The file explorer is a navigable tree on the left. Type while it is focused to
 filter paths, use Up/Down to select entries, Left/Right to collapse or expand
 folders, and Enter to open a file and close the explorer. `C-Shift-N` creates a
@@ -77,7 +92,9 @@ Open the centered panel with `C-p`. It searches workspace files by default; put
 results, and keyboard help in separate bordered regions. Recently opened files
 and recently chosen commands appear first. Important commands include:
 
-- `search.project` — fast recursive search with ripgrep.
+- `search.project` — open the live workspace-search sidebar. Results are grouped
+  by filename as the query changes; Up/Down selects matches and Enter opens one.
+  Ripgrep is used when available, with a built-in recursive fallback.
 - `git.stage` — open the ephemeral Git Changes sidebar. It separates unstaged
   and staged files; `+` stages, `-` unstages, and Enter opens a read-only diff.
   The list refreshes in the background, advances to the next file after an

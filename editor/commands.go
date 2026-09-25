@@ -28,6 +28,8 @@ func (a *App) registerCommands() {
 		"cursor.file-start":       a.moveToFileStart,
 		"cursor.line-end":         a.moveToLineEnd,
 		"cursor.line-start":       a.moveToLineStart,
+		"cursor.page-down":        a.pageDown,
+		"cursor.page-up":          a.pageUp,
 		"debug.continue":          a.debugContinue,
 		"debug.disconnect":        a.debugDisconnect,
 		"debug.launch":            a.debugLaunch,
@@ -352,6 +354,7 @@ func (a *App) saveBufferForQuit(current *buffer.Buffer, path string) error {
 }
 
 func (a *App) finishQuit() {
+	a.closeWorkspaceSearch()
 	for _, current := range a.buffers {
 		if current.terminal != nil && current.terminal.cancel != nil {
 			current.terminal.cancel()
@@ -545,6 +548,7 @@ func (a *App) switchBuffer(arguments string) error {
 func (a *App) toggleFiles(arguments string) error {
 	if !a.showFiles {
 		a.CloseSidebar()
+		a.closeWorkspaceSearch()
 		a.syncFileBrowser()
 		a.showFiles = true
 		a.browser.focused = true
@@ -655,6 +659,27 @@ func (a *App) moveToFileEnd(arguments string) error {
 	return nil
 }
 
+func (a *App) pageUp(arguments string) error {
+	a.movePage(false, arguments == "select")
+	a.ensureCursorVisible()
+	return nil
+}
+
+func (a *App) pageDown(arguments string) error {
+	a.movePage(true, arguments == "select")
+	a.ensureCursorVisible()
+	return nil
+}
+
+func (a *App) movePage(down, extend bool) {
+	_, height := a.screen.Size()
+	delta := max(1, height-3)
+	if !down {
+		delta = -delta
+	}
+	a.moveCursors(0, delta, extend)
+}
+
 func (a *App) searchBuffer(arguments string) error {
 	current := a.current()
 	items := make([]paletteItem, 0, current.LineCount())
@@ -679,39 +704,7 @@ func (a *App) searchBuffer(arguments string) error {
 }
 
 func (a *App) searchProject(arguments string) error {
-	if arguments == "" {
-		a.prompt("Search project", func(query string) {
-			if err := a.searchProject(query); err != nil {
-				a.message = err.Error()
-			}
-		})
-		return nil
-	}
-	output, err := runCommand(a.root, "rg", "--line-number", "--column", "--no-heading", "--color", "never", "--", arguments, ".")
-	if err != nil && output == "" {
-		return err
-	}
-	items := make([]paletteItem, 0)
-	for _, line := range strings.Split(output, "\n") {
-		parts := strings.SplitN(line, ":", 4)
-		if len(parts) != 4 {
-			continue
-		}
-		items = append(items, paletteItem{label: parts[3], detail: parts[0] + ":" + parts[1], value: strings.Join(parts[:3], ":")})
-	}
-	a.choose("Search results", items, func(item paletteItem) {
-		parts := strings.Split(item.value, ":")
-		if len(parts) < 3 {
-			return
-		}
-		if err := a.open(parts[0]); err != nil {
-			a.message = err.Error()
-			return
-		}
-		point := buffer.Point{Line: parseLineNumber(parts[1]), Column: parseLineNumber(parts[2])}
-		a.current().SetCursors([]buffer.Cursor{{Anchor: point, Point: point}})
-		a.ensureCursorVisible()
-	})
+	a.openWorkspaceSearch(arguments)
 	return nil
 }
 

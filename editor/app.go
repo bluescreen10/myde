@@ -38,6 +38,13 @@ type sidebarRefreshEvent struct {
 	err     error
 }
 
+type workspaceSearchEvent struct {
+	panel      *workspaceSearchPanel
+	generation uint64
+	results    []workspaceSearchResult
+	err        error
+}
+
 type serverEvent struct {
 	path               string
 	diagnostics        []diagnostic
@@ -53,6 +60,7 @@ type serverEvent struct {
 	terminal           *shellBuffer
 	terminalOutput     string
 	sidebarRefresh     *sidebarRefreshEvent
+	workspaceSearch    *workspaceSearchEvent
 }
 
 // App is an interactive editor session.
@@ -62,20 +70,21 @@ type App struct {
 	screen  *terminal.Screen
 	reader  *terminal.Reader
 
-	buffers        []*editorBuffer
-	active         int
-	topLine        int
-	leftColumn     int
-	historyLimit   int
-	files          []string
-	directories    []string
-	recentFiles    []string
-	recentCommands []string
-	showFiles      bool
-	browser        *fileBrowser
-	sidebar        *sidebarPanel
-	modes          map[string]plugin.Mode
-	extensionModes map[string]string
+	buffers         []*editorBuffer
+	active          int
+	topLine         int
+	leftColumn      int
+	historyLimit    int
+	files           []string
+	directories     []string
+	recentFiles     []string
+	recentCommands  []string
+	showFiles       bool
+	browser         *fileBrowser
+	sidebar         *sidebarPanel
+	workspaceSearch *workspaceSearchPanel
+	modes           map[string]plugin.Mode
+	extensionModes  map[string]string
 
 	theme           Theme
 	themes          map[string]Theme
@@ -88,6 +97,7 @@ type App struct {
 	message         string
 	prefix          bool
 	running         bool
+	cursorBlinkOn   bool
 	completionEpoch uint64
 	typingBuffer    *buffer.Buffer
 	typingKind      typingGroup
@@ -138,6 +148,7 @@ func New(
 		extensions:     newExtensions(absolute),
 		bindings:       defaultBindings(),
 		servers:        make(chan serverEvent, 64),
+		cursorBlinkOn:  true,
 	}
 	app.registerCommands()
 	if err := app.registerCoreModes(); err != nil {
@@ -192,6 +203,7 @@ func (a *App) Run() error {
 		}
 		select {
 		case event := <-events:
+			a.cursorBlinkOn = true
 			if err := a.handleEvent(event); err != nil {
 				a.message = err.Error()
 			}
@@ -199,6 +211,7 @@ func (a *App) Run() error {
 		case event := <-a.servers:
 			a.handleServerEvent(event)
 		case <-ticker.C:
+			a.cursorBlinkOn = !a.cursorBlinkOn
 			a.pollChanges()
 		case err := <-errors:
 			return err
@@ -352,6 +365,9 @@ func (a *App) applyExtensions() {
 }
 
 func (a *App) handleServerEvent(event serverEvent) {
+	if search := event.workspaceSearch; search != nil {
+		a.applyWorkspaceSearchEvent(search)
+	}
 	if refresh := event.sidebarRefresh; refresh != nil {
 		refresh.panel.refreshing = false
 		if refresh.panel == a.sidebar {
@@ -458,14 +474,16 @@ func scanWorkspace(root string) workspaceContents {
 
 func defaultBindings() map[string]string {
 	bindings := map[string]string{
-		"ctrl-p":       "command.palette",
-		"ctrl-q":       "editor.quit",
-		"ctrl-r":       "file.rename",
-		"ctrl-shift-n": "file.new",
-		"ctrl-space":   "completion.show",
-		"alt-.":        "lsp.definition",
-		"alt-j":        "cursor.add-below",
-		"alt-f":        "view.files",
+		"ctrl-p":         "command.palette",
+		"ctrl-q":         "editor.quit",
+		"ctrl-r":         "file.rename",
+		"ctrl-shift-n":   "file.new",
+		"ctrl-space":     "completion.show",
+		"ctrl-shift-f":   "search.project",
+		"ctrl-.":         "lsp.definition",
+		"alt-b":          "view.files",
+		"alt-shift-up":   "cursor.page-up",
+		"alt-shift-down": "cursor.page-down",
 	}
 	for key, command := range platformBindings() {
 		bindings[key] = command
@@ -488,6 +506,11 @@ func (a *App) handleEvent(event terminal.Event) error {
 		}
 		if a.sidebar != nil {
 			a.CloseSidebar()
+			a.message = ""
+			return nil
+		}
+		if a.workspaceSearch != nil {
+			a.closeWorkspaceSearch()
 			a.message = ""
 			return nil
 		}
@@ -539,6 +562,9 @@ func (a *App) handleEvent(event terminal.Event) error {
 	}
 	if a.sidebar != nil {
 		return a.handleSidebarEvent(event)
+	}
+	if a.workspaceSearch != nil {
+		return a.handleWorkspaceSearchEvent(event)
 	}
 	if event.Super {
 		switch event.Key {
@@ -598,11 +624,9 @@ func (a *App) handleEvent(event terminal.Event) error {
 	case terminal.KeyEnd:
 		a.moveLineEdge(true, event.Shift)
 	case terminal.KeyPageUp:
-		_, height := a.screen.Size()
-		a.moveCursors(0, -max(1, height-3), event.Shift)
+		a.movePage(false, event.Shift)
 	case terminal.KeyPageDown:
-		_, height := a.screen.Size()
-		a.moveCursors(0, max(1, height-3), event.Shift)
+		a.movePage(true, event.Shift)
 	}
 	a.ensureCursorVisible()
 	return nil
@@ -656,7 +680,8 @@ func (a *App) isTypingEvent(event terminal.Event) bool {
 	if a.prefix || a.minibuffer != nil || (a.palette != nil && !a.palette.completion) {
 		return false
 	}
-	if a.showFiles && a.browser.focused || a.sidebar != nil || a.currentEditorBuffer().terminal != nil {
+	if a.showFiles && a.browser.focused || a.sidebar != nil || a.workspaceSearch != nil ||
+		a.currentEditorBuffer().terminal != nil {
 		return false
 	}
 	return a.bindings[keyName(event)] == ""
@@ -877,7 +902,9 @@ func (a *App) ensureCursorVisible() {
 		a.topLine = point.Line - bodyHeight + 1
 	}
 	sidebarWidth := 0
-	if a.showFiles || a.sidebar != nil {
+	if a.workspaceSearch != nil {
+		sidebarWidth = searchSidebarWidth(width)
+	} else if a.showFiles || a.sidebar != nil {
 		sidebarWidth = fileSidebarWidth(width)
 	}
 	lineNumberWidth := len(strconv.Itoa(max(1, a.current().LineCount()))) + 2

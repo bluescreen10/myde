@@ -205,3 +205,35 @@ func TestScreenKeepsWideRunesAligned(t *testing.T) {
 		t.Fatalf("wide-rune frame = %q", got)
 	}
 }
+
+func TestScreenRestylesCellAndControlsHardwareCursor(t *testing.T) {
+	var output bytes.Buffer
+	screen := terminal.NewScreen(&output, 2, 1)
+	screen.Clear(terminal.Style{})
+	screen.Text(0, 0, "xy", terminal.Style{})
+	cursorStyle := terminal.Style{
+		Foreground: terminal.Color{G: 1},
+		Background: terminal.Color{R: 2},
+	}
+	screen.Restyle(1, 0, cursorStyle)
+	screen.SetCursorVisible(false)
+	if err := screen.Flush(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	frame := output.String()
+	if !bytes.Contains([]byte(frame), []byte(";38;2;0;1;0;48;2;2;0;0m")) {
+		t.Fatalf("restyled frame = %q", frame)
+	}
+	if !bytes.Contains([]byte(frame), []byte("\x1b[?25l")) {
+		t.Fatalf("hidden-cursor frame = %q", frame)
+	}
+
+	output.Reset()
+	screen.SetCursorVisible(true)
+	if err := screen.Flush(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(output.Bytes(), []byte("\x1b[?25h")) {
+		t.Fatalf("shown-cursor frame = %q", output.String())
+	}
+}

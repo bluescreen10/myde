@@ -45,17 +45,21 @@ type Screen struct {
 	height int
 	cells  []Cell
 
-	output io.Writer
-	last   []Cell
+	output            io.Writer
+	last              []Cell
+	cursorVisible     bool
+	lastCursorVisible bool
 }
 
 // NewScreen creates a screen for output.
 func NewScreen(output io.Writer, width, height int) *Screen {
 	return &Screen{
-		width:  width,
-		height: height,
-		cells:  make([]Cell, width*height),
-		output: output,
+		width:             width,
+		height:            height,
+		cells:             make([]Cell, width*height),
+		output:            output,
+		cursorVisible:     true,
+		lastCursorVisible: true,
 	}
 }
 
@@ -111,6 +115,27 @@ func (s *Screen) Set(x, y int, value rune, style Style) {
 	}
 }
 
+// Restyle changes the appearance of the cell at x, y without changing its
+// contents. Wide runes are restyled as a single two-cell glyph.
+func (s *Screen) Restyle(x, y int, style Style) {
+	if x < 0 || x >= s.width || y < 0 || y >= s.height {
+		return
+	}
+	index := y*s.width + x
+	if s.cells[index].continuation && x > 0 {
+		index--
+	}
+	s.cells[index].Style = style
+	if RuneWidth(s.cells[index].Rune) == 2 && index+1 < len(s.cells) {
+		s.cells[index+1].Style = style
+	}
+}
+
+// SetCursorVisible controls whether Flush displays the hardware cursor.
+func (s *Screen) SetCursorVisible(visible bool) {
+	s.cursorVisible = visible
+}
+
 // Text draws runes until text or the row ends.
 func (s *Screen) Text(x, y int, text string, style Style) {
 	for _, value := range text {
@@ -158,11 +183,19 @@ func (s *Screen) Flush(cursorX, cursorY int) error {
 		}
 	}
 	output.WriteString("\x1b[0m")
+	if s.cursorVisible != s.lastCursorVisible {
+		if s.cursorVisible {
+			output.WriteString("\x1b[?25h")
+		} else {
+			output.WriteString("\x1b[?25l")
+		}
+	}
 	fmt.Fprintf(&output, "\x1b[%d;%dH", cursorY+1, cursorX+1)
 	if _, err := s.output.Write(output.Bytes()); err != nil {
 		return fmt.Errorf("draw terminal: %w", err)
 	}
 	s.last = append(s.last[:0], s.cells...)
+	s.lastCursorVisible = s.cursorVisible
 	return nil
 }
 

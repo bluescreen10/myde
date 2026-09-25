@@ -82,6 +82,7 @@ func (a *App) RegisterCommand(name string, command plugin.Command) error {
 // OpenSidebar displays an ephemeral plugin panel on the left.
 func (a *App) OpenSidebar(sidebar plugin.Sidebar) {
 	a.closeFileBrowser()
+	a.closeWorkspaceSearch()
 	a.sidebar = newSidebarPanel(sidebar)
 	a.message = ""
 }
@@ -94,6 +95,7 @@ func (a *App) CloseSidebar() {
 // OpenReadOnlyBuffer opens or refreshes a named, memory-backed buffer.
 func (a *App) OpenReadOnlyBuffer(name string, content []byte) {
 	a.CloseSidebar()
+	a.closeWorkspaceSearch()
 	view := buffer.NewReadOnly(name, content)
 	for index, editorBuffer := range a.buffers {
 		current := editorBuffer.text
