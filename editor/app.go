@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bluescreen10/myde/buffer"
+	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/protocol"
 	"github.com/bluescreen10/myde/syntax"
 	"github.com/bluescreen10/myde/terminal"
@@ -64,6 +65,7 @@ type App struct {
 	files        []string
 	showFiles    bool
 	browser      *fileBrowser
+	sidebar      *sidebarPanel
 	diagnostics  map[string][]diagnostic
 	breakpoints  map[string]map[int]bool
 	terminals    map[*buffer.Buffer]*shellBuffer
@@ -71,7 +73,7 @@ type App struct {
 	theme           Theme
 	extensions      *extensions
 	bindings        map[string]string
-	commands        map[string]func(string) error
+	commands        map[string]plugin.Command
 	palette         *palette
 	minibuffer      *minibuffer
 	message         string
@@ -91,7 +93,14 @@ type App struct {
 }
 
 // New creates an editor rooted at root and opens paths.
-func New(root string, paths []string, session *terminal.Session, input io.Reader, output io.Writer) (*App, error) {
+func New(
+	root string,
+	paths []string,
+	session *terminal.Session,
+	input io.Reader,
+	output io.Writer,
+	installed ...plugin.Plugin,
+) (*App, error) {
 	absolute, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace: %w", err)
@@ -116,6 +125,11 @@ func New(root string, paths []string, session *terminal.Session, input io.Reader
 		servers:      make(chan serverEvent, 64),
 	}
 	app.registerCommands()
+	for _, current := range installed {
+		if err := current.Load(app); err != nil {
+			return nil, fmt.Errorf("load plugin %s: %w", current.Name(), err)
+		}
+	}
 	app.files = workspaceFiles(absolute)
 	app.browser = newFileBrowser(absolute, app.files)
 	for _, path := range paths {
@@ -194,6 +208,7 @@ func (a *App) open(path string) error {
 	for index, current := range a.buffers {
 		if current.Path() == absolute {
 			a.active = index
+			a.CloseSidebar()
 			return nil
 		}
 	}
@@ -202,6 +217,7 @@ func (a *App) open(path string) error {
 		return err
 	}
 	a.addBuffer(opened)
+	a.CloseSidebar()
 	a.topLine = 0
 	a.leftColumn = 0
 	a.runHooks("open")
@@ -372,7 +388,16 @@ func (a *App) handleEvent(event terminal.Event) error {
 		a.finishTypingGroup()
 	}
 	if event.Key == terminal.KeyEscape {
-		if a.palette == nil && a.minibuffer == nil && a.browser.focused {
+		if a.palette != nil || a.minibuffer != nil || a.prefix {
+			a.cancelAction()
+			return nil
+		}
+		if a.sidebar != nil {
+			a.CloseSidebar()
+			a.message = ""
+			return nil
+		}
+		if a.browser.focused {
 			a.closeFileBrowser()
 			a.message = ""
 			return nil
@@ -417,6 +442,9 @@ func (a *App) handleEvent(event terminal.Event) error {
 	}
 	if a.showFiles && a.browser.focused {
 		return a.handleFileBrowserEvent(event)
+	}
+	if a.sidebar != nil {
+		return a.handleSidebarEvent(event)
 	}
 	if event.Super {
 		switch event.Key {
@@ -526,7 +554,7 @@ func (a *App) isTypingEvent(event terminal.Event) bool {
 	if a.prefix || a.minibuffer != nil || (a.palette != nil && !a.palette.completion) {
 		return false
 	}
-	if a.showFiles && a.browser.focused || a.terminals[a.current()] != nil {
+	if a.showFiles && a.browser.focused || a.sidebar != nil || a.terminals[a.current()] != nil {
 		return false
 	}
 	return a.bindings[keyName(event)] == ""
@@ -609,6 +637,10 @@ func (a *App) applyEdits(edits []edit) {
 		return
 	}
 	current := a.current()
+	if current.IsReadOnly() {
+		a.message = current.Name() + " is read-only"
+		return
+	}
 	cursors := current.Cursors()
 	changedLine := current.LineCount()
 	for _, change := range edits {
@@ -743,7 +775,7 @@ func (a *App) ensureCursorVisible() {
 		a.topLine = point.Line - bodyHeight + 1
 	}
 	sidebarWidth := 0
-	if a.showFiles {
+	if a.showFiles || a.sidebar != nil {
 		sidebarWidth = fileSidebarWidth(width)
 	}
 	lineNumberWidth := len(strconv.Itoa(max(1, a.current().LineCount()))) + 2

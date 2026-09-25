@@ -153,6 +153,25 @@ func TestMergeNextEditGroup(t *testing.T) {
 	}
 }
 
+func TestReadOnlyBufferRejectsChanges(t *testing.T) {
+	b := buffer.NewReadOnly("changes.diff", []byte("before\n"))
+	b.Insert(b.Len(), []byte("after\n"))
+	b.Delete(0, 1)
+
+	if got := string(b.Bytes()); got != "before\n" {
+		t.Fatalf("Bytes() = %q, want original content", got)
+	}
+	if b.IsDirty() {
+		t.Fatal("read-only buffer is dirty")
+	}
+	if !b.IsReadOnly() {
+		t.Fatal("IsReadOnly() = false, want true")
+	}
+	if err := b.Save(""); err == nil {
+		t.Fatal("Save() = nil, want read-only error")
+	}
+}
+
 func TestUndoRestoresSavedState(t *testing.T) {
 	b := buffer.New()
 	b.Insert(0, []byte("saved"))

@@ -9,11 +9,12 @@ import (
 	"unicode"
 
 	"github.com/bluescreen10/myde/buffer"
+	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/syntax"
 )
 
 func (a *App) registerCommands() {
-	a.commands = map[string]func(string) error{
+	a.commands = map[string]plugin.Command{
 		"buffer.close":            a.closeBuffer,
 		"buffer.next":             a.nextBuffer,
 		"buffer.previous":         a.previousBuffer,
@@ -41,11 +42,6 @@ func (a *App) registerCommands() {
 		"edit.undo":               a.undo,
 		"file.open":               a.openFilePalette,
 		"file.save":               a.save,
-		"git.commit":              a.gitCommit,
-		"git.diff":                a.gitDiff,
-		"git.history":             a.gitHistory,
-		"git.stage":               a.gitStage,
-		"git.status":              a.gitStatus,
 		"lsp.definition":          a.requestLSPDefinition,
 		"lsp.start":               a.lspStart,
 		"search.buffer":           a.searchBuffer,
@@ -153,6 +149,9 @@ func (a *App) openFilePalette(arguments string) error {
 
 func (a *App) save(arguments string) error {
 	current := a.current()
+	if current.IsReadOnly() {
+		return fmt.Errorf("%s is read-only", current.Name())
+	}
 	if a.terminals[current] != nil {
 		return fmt.Errorf("terminal buffers cannot be saved")
 	}
@@ -384,6 +383,9 @@ func (a *App) selectBuffer(arguments string) error {
 
 func (a *App) undo(arguments string) error {
 	current := a.current()
+	if current.IsReadOnly() {
+		return fmt.Errorf("%s is read-only", current.Name())
+	}
 	if a.terminals[current] != nil {
 		return fmt.Errorf("terminal buffers do not have undo history")
 	}
@@ -397,6 +399,9 @@ func (a *App) undo(arguments string) error {
 
 func (a *App) redo(arguments string) error {
 	current := a.current()
+	if current.IsReadOnly() {
+		return fmt.Errorf("%s is read-only", current.Name())
+	}
 	if a.terminals[current] != nil {
 		return fmt.Errorf("terminal buffers do not have undo history")
 	}
@@ -439,6 +444,7 @@ func (a *App) switchBuffer(arguments string) error {
 
 func (a *App) toggleFiles(arguments string) error {
 	if !a.showFiles {
+		a.CloseSidebar()
 		a.showFiles = true
 		a.browser.focused = true
 		return nil
@@ -630,64 +636,6 @@ func (a *App) shellExec(arguments string) error {
 	if output != "" {
 		a.message = truncate(output, 120)
 	}
-	return err
-}
-
-func (a *App) gitStatus(arguments string) error {
-	output, err := runCommand(a.root, "git", "status", "--short", "--branch")
-	a.showOutput("Git status", output)
-	return err
-}
-
-func (a *App) gitDiff(arguments string) error {
-	argumentsList := []string{"diff"}
-	if arguments == "staged" {
-		argumentsList = append(argumentsList, "--staged")
-	}
-	if arguments == "file" && a.current().Path() != "" {
-		argumentsList = append(argumentsList, "--", a.current().Path())
-	}
-	output, err := runCommand(a.root, "git", argumentsList...)
-	a.showOutput("Git diff", output)
-	return err
-}
-
-func (a *App) gitHistory(arguments string) error {
-	command := []string{"log", "--oneline", "--decorate", "-100"}
-	if a.current().Path() != "" {
-		command = append(command, "--", a.current().Path())
-	}
-	output, err := runCommand(a.root, "git", command...)
-	a.showOutput("Git history", output)
-	return err
-}
-
-func (a *App) gitStage(arguments string) error {
-	path := arguments
-	if path == "" {
-		path = a.current().Path()
-	}
-	if path == "" {
-		return fmt.Errorf("no file to stage")
-	}
-	_, err := runCommand(a.root, "git", "add", "--", path)
-	if err == nil {
-		a.message = "staged " + filepath.Base(path)
-	}
-	return err
-}
-
-func (a *App) gitCommit(arguments string) error {
-	if arguments == "" {
-		a.prompt("Commit message", func(message string) {
-			if err := a.gitCommit(message); err != nil {
-				a.message = err.Error()
-			}
-		})
-		return nil
-	}
-	output, err := runCommand(a.root, "git", "commit", "-m", arguments)
-	a.showOutput("Git commit", output)
 	return err
 }
 

@@ -9,6 +9,9 @@ import (
 
 func (a *App) cut(arguments string) error {
 	current := a.current()
+	if current.IsReadOnly() {
+		return fmt.Errorf("%s is read-only", current.Name())
+	}
 	selections := selectedText(current)
 	if len(selections) == 0 {
 		a.message = "nothing selected"
@@ -32,6 +35,9 @@ func (a *App) cut(arguments string) error {
 }
 
 func (a *App) paste(arguments string) error {
+	if a.current().IsReadOnly() {
+		return fmt.Errorf("%s is read-only", a.current().Name())
+	}
 	text, err := readSystemClipboard()
 	if err != nil {
 		return err

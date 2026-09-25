@@ -68,6 +68,7 @@ type Buffer struct {
 	savedState uint64
 	nextState  uint64
 	modified   time.Time
+	readOnly   bool
 
 	history          []historyEntry
 	historyIndex     int
@@ -89,6 +90,18 @@ func New() *Buffer {
 func NewNamed(name string) *Buffer {
 	b := New()
 	b.name = name
+	return b
+}
+
+// NewReadOnly returns a named, memory-backed buffer that rejects edits and saves.
+func NewReadOnly(name string, content []byte) *Buffer {
+	b := NewNamed(name)
+	b.original = append([]byte(nil), content...)
+	b.length = len(content)
+	b.readOnly = true
+	if len(content) > 0 {
+		b.pieces = []piece{{source: originalSource, length: len(content)}}
+	}
 	return b
 }
 
@@ -166,6 +179,14 @@ func (b *Buffer) IsDirty() bool {
 	return b.state != b.savedState
 }
 
+// IsReadOnly reports whether the buffer rejects content changes and saves.
+func (b *Buffer) IsReadOnly() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	return b.readOnly
+}
+
 // Bytes returns an independent snapshot of the buffer.
 func (b *Buffer) Bytes() []byte {
 	b.mu.RLock()
@@ -209,6 +230,9 @@ func (b *Buffer) Insert(offset int, text []byte) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.readOnly {
+		return
+	}
 
 	offset = clamp(offset, 0, b.length)
 	b.insertLocked(offset, text)
@@ -231,6 +255,9 @@ func (b *Buffer) insertLocked(offset int, text []byte) {
 func (b *Buffer) Delete(start, end int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.readOnly {
+		return
+	}
 
 	start = clamp(start, 0, b.length)
 	end = clamp(end, start, b.length)
@@ -467,6 +494,9 @@ func (b *Buffer) SetCursors(cursors []Cursor) {
 func (b *Buffer) Save(path string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.readOnly {
+		return errors.New("save buffer: read-only")
+	}
 
 	if path != "" {
 		absolute, err := filepath.Abs(path)

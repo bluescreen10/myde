@@ -25,7 +25,7 @@ func (a *App) render() error {
 	if a.minibuffer != nil {
 		statusRow--
 	}
-	sidebarWidth := a.renderFiles(statusRow)
+	sidebarWidth := a.renderSidebar(statusRow)
 	a.renderBuffer(sidebarWidth, width, statusRow)
 	a.renderStatus(width, statusRow)
 	if a.palette != nil {
@@ -62,6 +62,10 @@ func (a *App) render() error {
 		cursorX = min(sidebarWidth-2, 3+displayWidth(string(a.browser.query)))
 		cursorY = 2
 	}
+	if a.palette == nil && a.minibuffer == nil && a.sidebar != nil {
+		cursorX = 2
+		cursorY = 2 + a.sidebar.selected - a.sidebar.top
+	}
 	return a.screen.Flush(cursorX, cursorY)
 }
 
@@ -88,6 +92,69 @@ func (a *App) renderTabs(width int) {
 			break
 		}
 	}
+}
+
+func (a *App) renderSidebar(statusRow int) int {
+	if a.sidebar != nil {
+		return a.renderPluginSidebar(statusRow)
+	}
+	return a.renderFiles(statusRow)
+}
+
+func (a *App) renderPluginSidebar(statusRow int) int {
+	width, _ := a.screen.Size()
+	sidebarWidth := fileSidebarWidth(width)
+	panelHeight := statusRow - 1
+	if panelHeight < 2 {
+		return sidebarWidth
+	}
+	panelStyle := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Panel}
+	border := terminal.Style{Foreground: a.theme.PanelBorder, Background: a.theme.Panel}
+	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
+	selected := terminal.Style{Foreground: a.theme.StatusText, Background: a.theme.Selection, Bold: true}
+	a.drawPanel(0, 1, sidebarWidth, panelHeight, a.sidebar.title, a.theme.Accent, panelStyle, border)
+	if panelHeight < 5 {
+		return sidebarWidth
+	}
+
+	rows := max(0, panelHeight-4)
+	a.sidebar.ensureVisible(rows)
+	for row := 0; row < rows && a.sidebar.top+row < len(a.sidebar.rows); row++ {
+		index := a.sidebar.top + row
+		entry := a.sidebar.rows[index]
+		y := 2 + row
+		if !entry.set {
+			style := border
+			if len(entry.title) > 0 && entry.title[0] != ' ' {
+				style = accent
+			}
+			a.screen.Text(2, y, truncate(entry.title, sidebarWidth-4), style)
+			continue
+		}
+		style := panelStyle
+		if index == a.sidebar.selected {
+			style = selected
+			fillRow(a.screen, 1, y, sidebarWidth-2, style)
+		}
+		label := "  " + entry.item.Label
+		if entry.item.Detail != "" {
+			label += "  " + entry.item.Detail
+		}
+		a.screen.Text(1, y, truncate(label, sidebarWidth-2), style)
+	}
+
+	footerSeparator := panelHeight - 2
+	a.drawPanelSeparator(0, footerSeparator, sidebarWidth, border)
+	help := make([]styledText, 0, len(a.sidebar.help)*2+2)
+	for _, item := range a.sidebar.help {
+		help = append(help,
+			styledText{text: item.Key, style: accent},
+			styledText{text: " " + item.Label + "  ", style: border},
+		)
+	}
+	help = append(help, styledText{text: "Esc", style: accent}, styledText{text: " close", style: border})
+	drawStyledText(a.screen, 2, footerSeparator+1, sidebarWidth-4, help)
+	return sidebarWidth
 }
 
 func (a *App) renderFiles(statusRow int) int {

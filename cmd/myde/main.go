@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/bluescreen10/myde/editor"
+	gitplugin "github.com/bluescreen10/myde/plugins/git"
 	"github.com/bluescreen10/myde/terminal"
 )
 
@@ -50,7 +51,7 @@ func run() (runErr error) {
 	stopSignals := restoreTerminalOnSignal(session)
 	defer stopSignals()
 
-	app, err := editor.New(root, paths, session, os.Stdin, os.Stdout)
+	app, err := editor.New(root, paths, session, os.Stdin, os.Stdout, gitplugin.New())
 	if err != nil {
 		return err
 	}

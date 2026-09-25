@@ -81,8 +81,11 @@ Open the centered panel with `C-p`. It searches workspace files by default; put
 results, and keyboard help in separate bordered regions. Important commands include:
 
 - `search.project` — fast recursive search with ripgrep.
-- `git.status`, `git.diff`, `git.diff staged`, `git.diff file`,
-  `git.history`, `git.stage`, and `git.commit`.
+- `git.stage` — open the ephemeral Git Changes sidebar. It separates unstaged
+  and staged files; `+` stages, `-` unstages, and Enter opens a read-only diff.
+- `git.diff` and `git.diff staged` — open workspace changes in a read-only
+  buffer.
+- `git.commit` — open a centered commit-message prompt and create the commit.
 - `lsp.start` — prompt for a language server command. Diagnostics appear inline,
   completion uses `textDocument/completion`, and `lsp.definition` navigates to
   definitions. In Go workspaces, `gopls` starts automatically when it is on
@@ -120,10 +123,10 @@ def format = shell.exec gofmt -w {file}
 
 # Hooks invoke a function or built-in command.
 hook save = format
-hook open = git.status
+hook open = shell.exec printf opened
 
 # Keys use ctrl-/alt- names.
-bind ctrl-g = git.status
+bind ctrl-g = git.stage
 bind alt-n = buffer.next
 
 # Start with the VS Code Dark 2026 theme and override individual colors.
@@ -144,6 +147,14 @@ The placeholders `{file}` and `{root}` expand to the active file and workspace.
 Unknown or invalid declarations leave the previous configuration active and show
 an error in the status line.
 
+## Plugins
+
+Plugins register commands through the public `plugin.Host` interface and can
+open generic sidebars, text prompts, and read-only buffers without importing
+editor internals. The Git plugin in `plugins/git` is loaded by the `myde`
+command and owns all Git subprocess and repository logic. The editor core has
+no hard-coded `git.*` commands.
+
 ## Architecture
 
 - `buffer` — piece-table text storage, transactional undo/redo, rune-aware
@@ -153,8 +164,11 @@ an error in the status line.
   TypeScript, Python, shell, and C/C++.
 - `protocol` — Content-Length framed JSON transport, JSON-RPC/LSP process
   management, and Debug Adapter Protocol process management.
-- `editor` — commands, palettes, multi-cursor edits, panes, extensions, LSP/DAP,
-  Git, search, hooks, and the VS Dark 2026 theme.
+- `plugin` — the command registration and host-service API used by plugins.
+- `plugins/git` — Git staging, diffs, and commits implemented outside the editor
+  core.
+- `editor` — commands, palettes, multi-cursor edits, generic sidebars,
+  extensions, LSP/DAP, search, hooks, and the VS Dark 2026 theme.
 
 The built-in highlighter is intentionally lightweight. The `syntax.Highlighter`
 boundary is where a Tree-sitter-backed parser can be installed without coupling
