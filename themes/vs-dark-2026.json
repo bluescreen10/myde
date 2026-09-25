@@ -1,0 +1,40 @@
+{
+  "id": "vs-dark-2026",
+  "name": "VS Dark 2026",
+  "colors": {
+    "background": "#1F1F1F",
+    "foreground": "#D4D4D4",
+    "muted": "#858585",
+    "selection": "#264F78",
+    "cursor": "#AEAFAD",
+    "status": "#007ACC",
+    "status_text": "#FFFFFF",
+    "accent": "#4FA8FF",
+    "error": "#F14C4C",
+    "diagnostic": "#F14C4C",
+    "panel": "#252526",
+    "panel_border": "#5A5A5A",
+    "diagnostic_background": "#3A2427",
+    "comment": "#6A9955",
+    "keyword": "#C586C0",
+    "string": "#CE9178",
+    "number": "#B5CEA8",
+    "type": "#4EC9B0"
+  },
+  "borders": {
+    "separator": {
+      "vertical": "│",
+      "horizontal": "─"
+    },
+    "corners": {
+      "top_left": "╭",
+      "top_right": "╮",
+      "bottom_left": "╰",
+      "bottom_right": "╯"
+    },
+    "lines": {
+      "horizontal": "─",
+      "vertical": "│"
+    }
+  }
+}

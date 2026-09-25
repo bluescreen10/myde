@@ -51,8 +51,50 @@ func (a *App) registerCommands() {
 		"shell.run":               a.shellRun,
 		"switch.mode":             a.switchMode,
 		"terminal.open":           a.openTerminal,
+		"theme.select":            a.selectTheme,
 		"view.files":              a.toggleFiles,
 	}
+}
+
+func (a *App) selectTheme(arguments string) error {
+	themeID := strings.TrimSpace(arguments)
+	if themeID != "" {
+		return a.activateTheme(themeID)
+	}
+	items := make([]paletteItem, 0, len(a.themeIDs))
+	for _, id := range a.themeIDs {
+		current := a.themes[id]
+		borders := current.Borders
+		detail := fmt.Sprintf("%c%c%c · separators %c %c",
+			borders.Corners.TopLeft,
+			borders.Lines.Horizontal,
+			borders.Corners.TopRight,
+			borders.Separator.Horizontal,
+			borders.Separator.Vertical,
+		)
+		if current.ID == a.theme.ID {
+			detail = "current · " + detail
+		}
+		items = append(items, paletteItem{
+			label: current.Name, detail: detail, value: current.ID, kind: "theme",
+		})
+	}
+	a.choose("Select Theme", items, func(item paletteItem) {
+		if err := a.activateTheme(item.value); err != nil {
+			a.message = err.Error()
+		}
+	})
+	return nil
+}
+
+func (a *App) activateTheme(id string) error {
+	selected, exists := a.themes[id]
+	if !exists {
+		return fmt.Errorf("unknown theme %q", id)
+	}
+	a.theme = selected
+	a.message = "theme: " + selected.Name
+	return nil
 }
 
 func (a *App) execute(specification string) error {

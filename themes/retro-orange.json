@@ -1,0 +1,40 @@
+{
+  "id": "retro-orange",
+  "name": "Retro Orange",
+  "colors": {
+    "background": "#100800",
+    "foreground": "#FFB347",
+    "muted": "#8C5018",
+    "selection": "#58300C",
+    "cursor": "#FFE0A3",
+    "status": "#442105",
+    "status_text": "#FFD080",
+    "accent": "#FF9F1C",
+    "error": "#FFD19A",
+    "diagnostic": "#FFB45C",
+    "panel": "#190D02",
+    "panel_border": "#B96718",
+    "diagnostic_background": "#3A1C07",
+    "comment": "#98591F",
+    "keyword": "#FFC166",
+    "string": "#E8891A",
+    "number": "#FFD28A",
+    "type": "#F4A641"
+  },
+  "borders": {
+    "separator": {
+      "vertical": "│",
+      "horizontal": "─"
+    },
+    "corners": {
+      "top_left": "╭",
+      "top_right": "╮",
+      "bottom_left": "╰",
+      "bottom_right": "╯"
+    },
+    "lines": {
+      "horizontal": "─",
+      "vertical": "│"
+    }
+  }
+}

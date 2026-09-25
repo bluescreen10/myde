@@ -560,21 +560,22 @@ func (a *App) drawPanel(
 	if width < 2 || height < 2 {
 		return
 	}
+	characters := a.theme.Borders
 	for y := top; y < top+height; y++ {
 		fillRow(a.screen, left, y, width, panel)
 	}
 	for x := left + 1; x < left+width-1; x++ {
-		a.screen.Set(x, top, '─', border)
-		a.screen.Set(x, top+height-1, '─', border)
+		a.screen.Set(x, top, characters.Lines.Horizontal, border)
+		a.screen.Set(x, top+height-1, characters.Lines.Horizontal, border)
 	}
 	for y := top + 1; y < top+height-1; y++ {
-		a.screen.Set(left, y, '│', border)
-		a.screen.Set(left+width-1, y, '│', border)
+		a.screen.Set(left, y, characters.Lines.Vertical, border)
+		a.screen.Set(left+width-1, y, characters.Lines.Vertical, border)
 	}
-	a.screen.Set(left, top, '╭', border)
-	a.screen.Set(left+width-1, top, '╮', border)
-	a.screen.Set(left, top+height-1, '╰', border)
-	a.screen.Set(left+width-1, top+height-1, '╯', border)
+	a.screen.Set(left, top, characters.Corners.TopLeft, border)
+	a.screen.Set(left+width-1, top, characters.Corners.TopRight, border)
+	a.screen.Set(left, top+height-1, characters.Corners.BottomLeft, border)
+	a.screen.Set(left+width-1, top+height-1, characters.Corners.BottomRight, border)
 	if title != "" && width > 6 {
 		heading := panel
 		heading.Foreground = titleColor
@@ -587,11 +588,12 @@ func (a *App) drawPanelSeparator(left, row, width int, style terminal.Style) {
 	if width < 2 {
 		return
 	}
-	a.screen.Set(left, row, '├', style)
+	characters := a.theme.Borders
+	a.screen.Set(left, row, characters.Lines.Vertical, style)
 	for x := left + 1; x < left+width-1; x++ {
-		a.screen.Set(x, row, '─', style)
+		a.screen.Set(x, row, characters.Separator.Horizontal, style)
 	}
-	a.screen.Set(left+width-1, row, '┤', style)
+	a.screen.Set(left+width-1, row, characters.Lines.Vertical, style)
 }
 
 func fillRow(screen *terminal.Screen, left, row, width int, style terminal.Style) {

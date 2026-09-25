@@ -1,0 +1,40 @@
+{
+  "id": "paper",
+  "name": "Paper",
+  "colors": {
+    "background": "#F7F4ED",
+    "foreground": "#2C2925",
+    "muted": "#837A70",
+    "selection": "#CDE3F5",
+    "cursor": "#2C2925",
+    "status": "#DED8CE",
+    "status_text": "#2C2925",
+    "accent": "#006D9C",
+    "error": "#B42318",
+    "diagnostic": "#B42318",
+    "panel": "#EFEAE1",
+    "panel_border": "#A69D91",
+    "diagnostic_background": "#F8D7D4",
+    "comment": "#6B7460",
+    "keyword": "#7A3E9D",
+    "string": "#8A4B08",
+    "number": "#1F6B4F",
+    "type": "#006D9C"
+  },
+  "borders": {
+    "separator": {
+      "vertical": "│",
+      "horizontal": "─"
+    },
+    "corners": {
+      "top_left": "┌",
+      "top_right": "┐",
+      "bottom_left": "└",
+      "bottom_right": "┘"
+    },
+    "lines": {
+      "horizontal": "─",
+      "vertical": "│"
+    }
+  }
+}

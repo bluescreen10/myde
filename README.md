@@ -1,4 +1,4 @@
-# myde
+ # myde
 
 `myde` is a small, fast terminal editor written in Go. Its interaction model is
 inspired by Emacs: commands have names, keys invoke commands, and a saved
@@ -94,6 +94,8 @@ results, and keyboard help in separate bordered regions. Important commands incl
 - `git.commit` — open a centered commit-message prompt and create the commit.
 - `switch.mode` — select the active buffer's mode from the modes registered by
   core and plugins. File extensions choose the initial mode automatically.
+- `theme.select` — choose one of the JSON themes shipped with myde. Passing a
+  theme ID, such as `theme.select midnight`, selects it directly.
 - `file.new` — create a file in the focused explorer directory, or create a
   clean untitled buffer when invoked from the editor.
 - `file.rename` — rename the selected explorer file without losing an open
@@ -158,11 +160,38 @@ color diagnosticbackground = #3A2427
 
 # File buffers keep 1,000 undo entries by default. Zero disables history.
 set history-limit = 2000
+
+# Select the startup theme by ID.
+set theme = midnight
 ```
 
 The placeholders `{file}` and `{root}` expand to the active file and workspace.
 Unknown or invalid declarations leave the previous configuration active and show
 an error in the status line.
+
+## Themes
+
+Built-in themes are JSON files in `themes`. A theme defines its colors and the
+literal characters used for panel separators, corners, and border lines:
+
+```json
+"borders": {
+  "separator": { "vertical": "│", "horizontal": "─" },
+  "corners": {
+    "top_left": "╭", "top_right": "╮",
+    "bottom_left": "╰", "bottom_right": "╯"
+  },
+  "lines": { "horizontal": "─", "vertical": "│" }
+}
+```
+
+Each value must be exactly one character; a space makes that part invisible.
+The files are embedded in the binary so they remain available outside the
+source tree. VS Dark 2026, the editor's original theme, remains the default.
+The built-ins also include Paper, Midnight, Retro Green, and Retro Orange; the
+retro themes use monochrome phosphor palettes and ASCII terminal borders.
+Run `theme.select` from the command palette to switch themes for the current
+session, or use `set theme = <id>` in `.myde` to select one at startup.
 
 ## Plugins
 

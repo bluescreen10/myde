@@ -1,0 +1,40 @@
+{
+  "id": "retro-green",
+  "name": "Retro Green",
+  "colors": {
+    "background": "#030A03",
+    "foreground": "#66FF66",
+    "muted": "#2D8C3A",
+    "selection": "#164D20",
+    "cursor": "#C4FFC4",
+    "status": "#0C3514",
+    "status_text": "#A0FFA0",
+    "accent": "#39FF58",
+    "error": "#B8FFBE",
+    "diagnostic": "#8FFF9C",
+    "panel": "#071307",
+    "panel_border": "#32B847",
+    "diagnostic_background": "#15351A",
+    "comment": "#347E3E",
+    "keyword": "#9AFF9A",
+    "string": "#52D963",
+    "number": "#B0FFB0",
+    "type": "#72ED7E"
+  },
+  "borders": {
+    "separator": {
+      "vertical": "│",
+      "horizontal": "─"
+    },
+    "corners": {
+      "top_left": "╭",
+      "top_right": "╮",
+      "bottom_left": "╰",
+      "bottom_right": "╯"
+    },
+    "lines": {
+      "horizontal": "─",
+      "vertical": "│"
+    }
+  }
+}

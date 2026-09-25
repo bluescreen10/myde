@@ -1,0 +1,40 @@
+{
+  "id": "midnight",
+  "name": "Midnight",
+  "colors": {
+    "background": "#0B1020",
+    "foreground": "#DCE5F5",
+    "muted": "#71809B",
+    "selection": "#23395D",
+    "cursor": "#F5C2E7",
+    "status": "#172554",
+    "status_text": "#E0E7FF",
+    "accent": "#7DD3FC",
+    "error": "#FB7185",
+    "diagnostic": "#FDA4AF",
+    "panel": "#11182B",
+    "panel_border": "#3B4A68",
+    "diagnostic_background": "#351923",
+    "comment": "#7C8DAA",
+    "keyword": "#C4B5FD",
+    "string": "#A7F3D0",
+    "number": "#FDE68A",
+    "type": "#67E8F9"
+  },
+  "borders": {
+    "separator": {
+      "vertical": "║",
+      "horizontal": "═"
+    },
+    "corners": {
+      "top_left": "╔",
+      "top_right": "╗",
+      "bottom_left": "╚",
+      "bottom_right": "╝"
+    },
+    "lines": {
+      "horizontal": "═",
+      "vertical": "║"
+    }
+  }
+}

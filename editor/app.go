@@ -69,6 +69,8 @@ type App struct {
 	extensionModes map[string]string
 
 	theme           Theme
+	themes          map[string]Theme
+	themeIDs        []string
 	extensions      *extensions
 	bindings        map[string]string
 	commands        map[string]plugin.Command
@@ -109,6 +111,10 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	loadedThemes, themeIDs, err := loadBuiltinThemes()
+	if err != nil {
+		return nil, err
+	}
 	app := &App{
 		root:           absolute,
 		session:        session,
@@ -117,7 +123,9 @@ func New(
 		modes:          make(map[string]plugin.Mode),
 		extensionModes: make(map[string]string),
 		historyLimit:   1000,
-		theme:          VSDark2026(),
+		theme:          loadedThemes[defaultThemeID],
+		themes:         loadedThemes,
+		themeIDs:       themeIDs,
 		extensions:     newExtensions(absolute),
 		bindings:       defaultBindings(),
 		servers:        make(chan serverEvent, 64),
@@ -283,7 +291,16 @@ func (a *App) applyExtensions() {
 	for key, command := range a.extensions.bindings {
 		a.bindings[key] = command
 	}
-	a.theme = VSDark2026()
+	themeID := a.extensions.settings["theme"]
+	if themeID == "" {
+		themeID = defaultThemeID
+	}
+	configuredTheme, exists := a.themes[themeID]
+	if !exists {
+		a.message = fmt.Sprintf("unknown theme %q", themeID)
+		configuredTheme = a.themes[defaultThemeID]
+	}
+	a.theme = configuredTheme
 	for name, value := range a.extensions.colors {
 		if err := a.theme.setColor(name, value); err != nil {
 			a.message = err.Error()
