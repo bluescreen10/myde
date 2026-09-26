@@ -20,6 +20,7 @@ type Host interface {
 	ReplaceCurrentDocument(content []byte) error
 	RegisterCommand(name string, command Command) error
 	RegisterMode(mode Mode) error
+	NewView(view View) ViewHandle
 	OpenSidebar(sidebar Sidebar)
 	CloseSidebar()
 	OpenReadOnlyBuffer(name string, content []byte)
@@ -68,28 +69,16 @@ type Mode struct {
 	DebugAdapter   DebugAdapter
 }
 
-// Sidebar describes an ephemeral, keyboard-driven panel. FullScreen gives the
-// panel a second, preview pane and lets Tab move focus between the two panes.
-// OnPreview runs in the background and should return self-contained data rather
-// than calling UI methods on Host.
+// Sidebar describes an ephemeral, keyboard-driven panel on the left.
 type Sidebar struct {
 	Title           string
 	Sections        []SidebarSection
 	SelectedValue   string
 	SelectedKind    string
-	FullScreen      bool
 	Help            []KeyHelp
 	OnAction        func(action Action, item SidebarItem) error
-	OnPreview       func(item SidebarItem) (SidebarPreview, error)
 	RefreshInterval time.Duration
 	OnRefresh       func() (Sidebar, error)
-}
-
-// SidebarPreview is the document shown beside a full-screen sidebar.
-type SidebarPreview struct {
-	Title   string
-	Content []byte
-	Syntax  string
 }
 
 // SidebarSection groups related panel items under a heading.
@@ -106,6 +95,81 @@ type SidebarItem struct {
 	Value      string
 	Kind       string
 	Data       string
+}
+
+// View is a persistent tab composed from UI panes. OnRefresh runs in the
+// background and should return self-contained data rather than call Host.
+type View struct {
+	Title           string
+	Layout          Layout
+	RefreshInterval time.Duration
+	OnRefresh       func() (View, error)
+}
+
+// ViewHandle controls a tab created by NewView. Show raises an existing view
+// and reports false after the tab has been destroyed.
+type ViewHandle interface {
+	Show() bool
+	Update(view View) bool
+	Destroy()
+}
+
+// Layout arranges panes along one axis. Weight controls their relative size.
+type Layout struct {
+	Direction LayoutDirection
+	Panes     []Pane
+}
+
+// LayoutDirection identifies the axis used to arrange a layout's panes.
+type LayoutDirection string
+
+const (
+	LayoutHorizontal LayoutDirection = "horizontal"
+	LayoutVertical   LayoutDirection = "vertical"
+)
+
+// Pane is a bordered region containing one widget.
+type Pane struct {
+	ID       string
+	Title    string
+	Weight   int
+	List     *List
+	Document *ViewDocument
+}
+
+// List is a selectable list widget. OnSelect is evaluated in the background
+// and places its returned document in PreviewPane.
+type List struct {
+	Sections      []ListSection
+	SelectedValue string
+	SelectedKind  string
+	Help          []KeyHelp
+	PreviewPane   string
+	OnAction      func(action Action, item ListItem) error
+	OnSelect      func(item ListItem) (ViewDocument, error)
+}
+
+// ListSection groups list widget items under a heading.
+type ListSection struct {
+	Title string
+	Items []ListItem
+}
+
+// ListItem is one selectable row in a list widget.
+type ListItem struct {
+	Label      string
+	Detail     string
+	DetailTone Tone
+	Value      string
+	Kind       string
+	Data       string
+}
+
+// ViewDocument is immutable content rendered by a document widget.
+type ViewDocument struct {
+	Title   string
+	Content []byte
+	Syntax  string
 }
 
 // Tone gives text a semantic theme color.

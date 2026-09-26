@@ -21,7 +21,8 @@ const (
 )
 
 type gitPlugin struct {
-	host plugin.Host
+	host        plugin.Host
+	stageHandle plugin.ViewHandle
 }
 
 type fileState struct {
@@ -59,64 +60,80 @@ func (g *gitPlugin) Load(host plugin.Host) error {
 }
 
 func (g *gitPlugin) stageCommand(arguments string) error {
-	return g.showStagePanel("", strings.TrimSpace(arguments))
+	return g.showStageView("", strings.TrimSpace(arguments))
 }
 
-func (g *gitPlugin) showStagePanel(selectedKind, selectedValue string) error {
+func (g *gitPlugin) showStageView(selectedKind, selectedValue string) error {
 	states, err := g.status()
 	if err != nil {
 		return err
 	}
-	g.host.OpenSidebar(g.stageSidebar(states, selectedKind, selectedValue))
+	view := g.stageView(states, selectedKind, selectedValue)
+	if g.stageHandle != nil && g.stageHandle.Update(view) {
+		g.stageHandle.Show()
+		return nil
+	}
+	g.stageHandle = g.host.NewView(view)
 	return nil
 }
 
-func (g *gitPlugin) stageSidebar(states []fileState, selectedKind, selectedValue string) plugin.Sidebar {
-	unstaged := make([]plugin.SidebarItem, 0)
-	staged := make([]plugin.SidebarItem, 0)
+func (g *gitPlugin) stageView(states []fileState, selectedKind, selectedValue string) plugin.View {
+	unstaged := make([]plugin.ListItem, 0)
+	staged := make([]plugin.ListItem, 0)
 	for _, state := range states {
 		if state.unstaged {
 			status, tone := displayStatus(state, false)
-			unstaged = append(unstaged, plugin.SidebarItem{
+			unstaged = append(unstaged, plugin.ListItem{
 				Label: state.path, Detail: status, DetailTone: tone, Value: state.path, Kind: unstagedKind,
 				Data: state.status,
 			})
 		}
 		if state.staged {
 			status, tone := displayStatus(state, true)
-			staged = append(staged, plugin.SidebarItem{
+			staged = append(staged, plugin.ListItem{
 				Label: state.path, Detail: status, DetailTone: tone, Value: state.path, Kind: stagedKind,
 				Data: state.status,
 			})
 		}
 	}
-	return plugin.Sidebar{
-		Title:      "Git Changes",
-		FullScreen: true,
-		Sections: []plugin.SidebarSection{
-			{Title: "Unstaged", Items: unstaged},
-			{Title: "Staged", Items: staged},
+	return plugin.View{
+		Title: "Git Stage",
+		Layout: plugin.Layout{
+			Direction: plugin.LayoutHorizontal,
+			Panes: []plugin.Pane{
+				{
+					ID: "changes", Title: "Git Changes", Weight: 1,
+					List: &plugin.List{
+						Sections: []plugin.ListSection{
+							{Title: "Unstaged", Items: unstaged},
+							{Title: "Staged", Items: staged},
+						},
+						SelectedValue: selectedValue,
+						SelectedKind:  selectedKind,
+						PreviewPane:   "diff",
+						Help: []plugin.KeyHelp{
+							{Key: "+", Label: "stage"},
+							{Key: "-", Label: "unstage"},
+						},
+						OnAction: g.handleStageAction,
+						OnSelect: g.previewDiff,
+					},
+				},
+				{ID: "diff", Title: "Diff", Weight: 2, Document: &plugin.ViewDocument{Syntax: "diff"}},
+			},
 		},
-		SelectedValue: selectedValue,
-		SelectedKind:  selectedKind,
-		Help: []plugin.KeyHelp{
-			{Key: "+", Label: "stage"},
-			{Key: "-", Label: "unstage"},
-		},
-		OnAction:        g.handleStageAction,
-		OnPreview:       g.previewDiff,
 		RefreshInterval: time.Second,
-		OnRefresh: func() (plugin.Sidebar, error) {
+		OnRefresh: func() (plugin.View, error) {
 			updated, err := g.status()
 			if err != nil {
-				return plugin.Sidebar{}, err
+				return plugin.View{}, err
 			}
-			return g.stageSidebar(updated, "", ""), nil
+			return g.stageView(updated, "", ""), nil
 		},
 	}
 }
 
-func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.SidebarItem) error {
+func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.ListItem) error {
 	switch action {
 	case plugin.Add:
 		if item.Kind != unstagedKind {
@@ -130,7 +147,9 @@ func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.SidebarI
 			return err
 		}
 		kind, selected := nextSelection(states, unstagedKind, item.Value)
-		g.host.OpenSidebar(g.stageSidebar(states, kind, selected))
+		if err := g.updateStageView(states, kind, selected); err != nil {
+			return err
+		}
 		g.host.SetMessage("staged " + item.Value)
 	case plugin.Remove:
 		if item.Kind != stagedKind {
@@ -144,11 +163,22 @@ func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.SidebarI
 			return err
 		}
 		kind, selected := nextSelection(states, stagedKind, item.Value)
-		g.host.OpenSidebar(g.stageSidebar(states, kind, selected))
+		if err := g.updateStageView(states, kind, selected); err != nil {
+			return err
+		}
 		g.host.SetMessage("unstaged " + item.Value)
 	case plugin.Activate:
 		return g.openDiff(item.Kind == stagedKind, item.Value, item.Data == "??")
 	}
+	return nil
+}
+
+func (g *gitPlugin) updateStageView(states []fileState, selectedKind, selectedValue string) error {
+	view := g.stageView(states, selectedKind, selectedValue)
+	if g.stageHandle != nil && g.stageHandle.Update(view) {
+		return nil
+	}
+	g.stageHandle = g.host.NewView(view)
 	return nil
 }
 
@@ -239,17 +269,17 @@ func (g *gitPlugin) openDiff(staged bool, path string, untracked bool) error {
 	return nil
 }
 
-func (g *gitPlugin) previewDiff(item plugin.SidebarItem) (plugin.SidebarPreview, error) {
+func (g *gitPlugin) previewDiff(item plugin.ListItem) (plugin.ViewDocument, error) {
 	staged := item.Kind == stagedKind
 	output, err := g.diff(staged, item.Value, item.Data == "??")
 	if err != nil {
-		return plugin.SidebarPreview{}, err
+		return plugin.ViewDocument{}, err
 	}
 	kind := "Unstaged"
 	if staged {
 		kind = "Staged"
 	}
-	return plugin.SidebarPreview{
+	return plugin.ViewDocument{
 		Title: kind + " · " + filepath.ToSlash(item.Value), Content: output, Syntax: "diff",
 	}, nil
 }
@@ -292,7 +322,10 @@ func (g *gitPlugin) commit(message string) error {
 	if err != nil {
 		return err
 	}
-	g.host.CloseSidebar()
+	if g.stageHandle != nil {
+		g.stageHandle.Destroy()
+		g.stageHandle = nil
+	}
 	text := strings.TrimSpace(string(output))
 	if text == "" {
 		text = "commit created"

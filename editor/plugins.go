@@ -84,7 +84,6 @@ func (a *App) OpenSidebar(sidebar plugin.Sidebar) {
 	a.closeFileBrowser()
 	a.closeWorkspaceSearch()
 	a.sidebar = newSidebarPanel(sidebar)
-	a.requestSidebarPreview()
 	a.message = ""
 }
 

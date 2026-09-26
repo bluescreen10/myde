@@ -27,9 +27,12 @@ func (a *App) render() error {
 	if a.minibuffer != nil {
 		statusRow--
 	}
-	sidebarWidth := a.renderSidebar(statusRow)
-	fullScreenSidebar := a.sidebar != nil && a.sidebar.fullScreen
-	if !fullScreenSidebar {
+	sidebarWidth := 0
+	activeView := a.currentView()
+	if activeView != nil {
+		a.renderView(activeView, statusRow)
+	} else {
+		sidebarWidth = a.renderSidebar(statusRow)
 		a.renderBuffer(sidebarWidth, width, statusRow)
 	}
 	a.renderStatus(width, statusRow)
@@ -40,7 +43,7 @@ func (a *App) render() error {
 		} else {
 			a.renderPalette(width, statusRow)
 		}
-	} else if a.minibuffer == nil && !fullScreenSidebar {
+	} else if a.minibuffer == nil && activeView == nil {
 		if item, ok := a.diagnosticAtCursor(); ok {
 			cursorX, cursorY := a.cursorPosition(sidebarWidth, statusRow)
 			a.renderDiagnostic(width, statusRow, cursorX, cursorY, item)
@@ -83,7 +86,7 @@ func (a *App) render() error {
 		cursorY = 2
 	}
 	softwareCursors := a.usesSoftwareCursors()
-	hideCursor := softwareCursors || (fullScreenSidebar && a.palette == nil && a.minibuffer == nil)
+	hideCursor := softwareCursors || (activeView != nil && a.palette == nil && a.minibuffer == nil)
 	a.screen.SetCursorVisible(!hideCursor)
 	if softwareCursors && a.cursorBlinkOn {
 		a.renderSoftwareCursors(sidebarWidth, statusRow)
@@ -128,9 +131,6 @@ func (a *App) renderSidebar(statusRow int) int {
 }
 
 func (a *App) renderPluginSidebar(statusRow int) int {
-	if a.sidebar.fullScreen {
-		return a.renderFullScreenSidebar(statusRow)
-	}
 	width, _ := a.screen.Size()
 	sidebarWidth := fileSidebarWidth(width)
 	panelHeight := statusRow - 1
@@ -388,6 +388,19 @@ func (a *App) renderStatus(width, row int) {
 	style := terminal.Style{Foreground: a.theme.StatusText, Background: a.theme.Status}
 	for x := range width {
 		a.screen.Set(x, row, ' ', style)
+	}
+	if view := a.currentView(); view != nil {
+		left := " " + a.message
+		if left == " " {
+			left = " Tab switch pane  C-x k close view  C-p files / > commands"
+		}
+		right := fmt.Sprintf("%s  %s  View ", view.title, a.theme.Name)
+		rightWidth := displayWidth(right)
+		a.screen.Text(0, row, truncate(left, max(0, width-rightWidth-1)), style)
+		if rightWidth < width {
+			a.screen.Text(width-rightWidth, row, right, style)
+		}
+		return
 	}
 	point := a.current().Cursors()[0].Point
 	left := " " + a.message

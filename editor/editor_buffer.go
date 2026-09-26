@@ -14,6 +14,7 @@ type editorBuffer struct {
 	mode        string
 	lspOpened   bool
 	terminal    *shellBuffer
+	view        *viewPanel
 }
 
 func (a *App) newEditorBuffer(text *buffer.Buffer) *editorBuffer {

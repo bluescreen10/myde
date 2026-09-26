@@ -38,13 +38,6 @@ type sidebarRefreshEvent struct {
 	err     error
 }
 
-type sidebarPreviewEvent struct {
-	panel      *sidebarPanel
-	generation uint64
-	preview    plugin.SidebarPreview
-	err        error
-}
-
 type workspaceSearchEvent struct {
 	panel      *workspaceSearchPanel
 	generation uint64
@@ -67,8 +60,9 @@ type serverEvent struct {
 	terminal           *shellBuffer
 	terminalOutput     string
 	sidebarRefresh     *sidebarRefreshEvent
-	sidebarPreview     *sidebarPreviewEvent
 	workspaceSearch    *workspaceSearchEvent
+	viewPreview        *viewPreviewEvent
+	viewRefresh        *viewRefreshEvent
 }
 
 // App is an interactive editor session.
@@ -119,6 +113,7 @@ type App struct {
 	dapCancel            context.CancelFunc
 	dapMode              string
 	servers              chan serverEvent
+	nextViewID           uint64
 }
 
 // New creates an editor rooted at root and opens paths.
@@ -273,6 +268,7 @@ func (a *App) open(path string) error {
 
 func (a *App) pollChanges() {
 	a.pollSidebarRefresh()
+	a.pollViewRefreshes()
 	if a.showFiles {
 		a.syncFileBrowser()
 	}
@@ -376,8 +372,11 @@ func (a *App) handleServerEvent(event serverEvent) {
 	if search := event.workspaceSearch; search != nil {
 		a.applyWorkspaceSearchEvent(search)
 	}
-	if preview := event.sidebarPreview; preview != nil {
-		a.applySidebarPreviewEvent(preview)
+	if preview := event.viewPreview; preview != nil {
+		a.applyViewPreviewEvent(preview)
+	}
+	if refresh := event.viewRefresh; refresh != nil {
+		a.applyViewRefreshEvent(refresh)
 	}
 	if refresh := event.sidebarRefresh; refresh != nil {
 		refresh.panel.refreshing = false
@@ -391,15 +390,7 @@ func (a *App) handleServerEvent(event serverEvent) {
 				}
 				replacement := newSidebarPanel(refresh.sidebar)
 				replacement.top = refresh.panel.top
-				replacement.previewFocused = refresh.panel.previewFocused
-				replacement.previewTop = refresh.panel.previewTop
-				replacement.previewLeft = refresh.panel.previewLeft
-				replacement.preview = refresh.panel.preview
-				replacement.previewLines = refresh.panel.previewLines
-				replacement.previewValue = refresh.panel.previewValue
-				replacement.previewKind = refresh.panel.previewKind
 				a.sidebar = replacement
-				a.requestSidebarPreview()
 			}
 		}
 	}
@@ -533,6 +524,10 @@ func (a *App) handleEvent(event terminal.Event) error {
 			a.message = ""
 			return nil
 		}
+		if view := a.currentView(); view != nil {
+			view.focus = 0
+			return nil
+		}
 		if a.browser.focused {
 			a.closeFileBrowser()
 			a.message = ""
@@ -584,6 +579,9 @@ func (a *App) handleEvent(event terminal.Event) error {
 	}
 	if a.workspaceSearch != nil {
 		return a.handleWorkspaceSearchEvent(event)
+	}
+	if a.currentView() != nil {
+		return a.handleViewEvent(event)
 	}
 	if event.Super {
 		switch event.Key {
@@ -699,7 +697,7 @@ func (a *App) isTypingEvent(event terminal.Event) bool {
 	if a.prefix || a.minibuffer != nil || (a.palette != nil && !a.palette.completion) {
 		return false
 	}
-	if a.showFiles && a.browser.focused || a.sidebar != nil || a.workspaceSearch != nil ||
+	if a.showFiles && a.browser.focused || a.sidebar != nil || a.workspaceSearch != nil || a.currentView() != nil ||
 		a.currentEditorBuffer().terminal != nil {
 		return false
 	}

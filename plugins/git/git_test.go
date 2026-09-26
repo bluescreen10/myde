@@ -22,6 +22,15 @@ type testHost struct {
 	buffer      []byte
 	message     string
 	modes       []plugin.Mode
+	view        plugin.View
+	viewHandle  *testViewHandle
+	newViews    int
+}
+
+type testViewHandle struct {
+	host      *testHost
+	alive     bool
+	showCount int
 }
 
 func (h *testHost) Root() string {
@@ -57,6 +66,33 @@ func (h *testHost) OpenSidebar(sidebar plugin.Sidebar) {
 
 func (h *testHost) CloseSidebar() {
 	h.sidebar = plugin.Sidebar{}
+}
+
+func (h *testHost) NewView(view plugin.View) plugin.ViewHandle {
+	h.view = view
+	h.newViews++
+	h.viewHandle = &testViewHandle{host: h, alive: true}
+	return h.viewHandle
+}
+
+func (h *testViewHandle) Show() bool {
+	if !h.alive {
+		return false
+	}
+	h.showCount++
+	return true
+}
+
+func (h *testViewHandle) Update(view plugin.View) bool {
+	if !h.alive {
+		return false
+	}
+	h.host.view = view
+	return true
+}
+
+func (h *testViewHandle) Destroy() {
+	h.alive = false
 }
 
 func (h *testHost) OpenReadOnlyBuffer(name string, content []byte) {
@@ -106,22 +142,27 @@ func TestPluginStagesDiffsUnstagesAndCommits(t *testing.T) {
 	if err := host.commands["git.stage"](""); err != nil {
 		t.Fatal(err)
 	}
-	unstaged := sidebarItem(t, host.sidebar, "Unstaged", "main.go")
-	if !host.sidebar.FullScreen || host.sidebar.OnPreview == nil {
-		t.Fatal("git stage did not open the full-screen review view")
+	changes := changesList(t, host.view)
+	unstaged := listItem(t, changes, "Unstaged", "main.go")
+	if host.view.Layout.Direction != plugin.LayoutHorizontal || len(host.view.Layout.Panes) != 2 {
+		t.Fatalf("git stage layout = %+v", host.view.Layout)
 	}
-	preview, err := host.sidebar.OnPreview(unstaged)
+	if changes.OnSelect == nil {
+		t.Fatal("git stage changes list has no preview callback")
+	}
+	preview, err := changes.OnSelect(unstaged)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if preview.Syntax != "diff" || !bytes.Contains(preview.Content, []byte("+func main() {}")) {
 		t.Fatalf("unstaged preview = %+v", preview)
 	}
-	if err := host.sidebar.OnAction(plugin.Add, unstaged); err != nil {
+	if err := changes.OnAction(plugin.Add, unstaged); err != nil {
 		t.Fatal(err)
 	}
-	staged := sidebarItem(t, host.sidebar, "Staged", "main.go")
-	if err := host.sidebar.OnAction(plugin.Activate, staged); err != nil {
+	changes = changesList(t, host.view)
+	staged := listItem(t, changes, "Staged", "main.go")
+	if err := changes.OnAction(plugin.Activate, staged); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasSuffix(host.bufferName, ".diff") || !bytes.Contains(host.buffer, []byte("+func main() {}")) {
@@ -131,14 +172,19 @@ func TestPluginStagesDiffsUnstagesAndCommits(t *testing.T) {
 	if err := host.commands["git.stage"]("main.go"); err != nil {
 		t.Fatal(err)
 	}
-	staged = sidebarItem(t, host.sidebar, "Staged", "main.go")
-	if err := host.sidebar.OnAction(plugin.Remove, staged); err != nil {
+	if host.newViews != 1 || host.viewHandle.showCount != 1 {
+		t.Fatalf("second git.stage created %d views and showed existing %d times", host.newViews, host.viewHandle.showCount)
+	}
+	changes = changesList(t, host.view)
+	staged = listItem(t, changes, "Staged", "main.go")
+	if err := changes.OnAction(plugin.Remove, staged); err != nil {
 		t.Fatal(err)
 	}
-	sidebarItem(t, host.sidebar, "Unstaged", "main.go")
+	changes = changesList(t, host.view)
+	listItem(t, changes, "Unstaged", "main.go")
 
-	unstaged = sidebarItem(t, host.sidebar, "Unstaged", "main.go")
-	if err := host.sidebar.OnAction(plugin.Add, unstaged); err != nil {
+	unstaged = listItem(t, changes, "Unstaged", "main.go")
+	if err := changes.OnAction(plugin.Add, unstaged); err != nil {
 		t.Fatal(err)
 	}
 	if err := host.commands["git.commit"](""); err != nil {
@@ -153,9 +199,12 @@ func TestPluginStagesDiffsUnstagesAndCommits(t *testing.T) {
 	if got := runGit(t, root, "log", "-1", "--pretty=%s"); strings.TrimSpace(got) != "add main" {
 		t.Fatalf("commit subject = %q, want add main", got)
 	}
+	if host.viewHandle.alive {
+		t.Fatal("committing did not destroy the Git Stage view")
+	}
 }
 
-func TestStagePanelSelectsNextFileAndCanRefresh(t *testing.T) {
+func TestStageViewSelectsNextFileAndCanRefresh(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
@@ -183,47 +232,62 @@ func TestStagePanelSelectsNextFileAndCanRefresh(t *testing.T) {
 	if err := host.commands["git.stage"](""); err != nil {
 		t.Fatal(err)
 	}
-	first := sidebarItem(t, host.sidebar, "Unstaged", "a.txt")
+	changes := changesList(t, host.view)
+	first := listItem(t, changes, "Unstaged", "a.txt")
 	if first.Detail != "M" || first.DetailTone != plugin.ToneWarning {
 		t.Fatalf("modified status = %+v", first)
 	}
-	if host.sidebar.OnRefresh == nil || host.sidebar.RefreshInterval <= 0 {
-		t.Fatal("stage panel has no background refresh")
+	if host.view.OnRefresh == nil || host.view.RefreshInterval <= 0 {
+		t.Fatal("stage view has no background refresh")
 	}
-	if err := host.sidebar.OnAction(plugin.Add, first); err != nil {
+	if err := changes.OnAction(plugin.Add, first); err != nil {
 		t.Fatal(err)
 	}
-	if host.sidebar.SelectedKind != "unstaged" || host.sidebar.SelectedValue != "b.txt" {
-		t.Fatalf("selection after staging a.txt = %s/%s", host.sidebar.SelectedKind, host.sidebar.SelectedValue)
+	changes = changesList(t, host.view)
+	if changes.SelectedKind != "unstaged" || changes.SelectedValue != "b.txt" {
+		t.Fatalf("selection after staging a.txt = %s/%s", changes.SelectedKind, changes.SelectedValue)
 	}
-	second := sidebarItem(t, host.sidebar, "Unstaged", "b.txt")
-	if err := host.sidebar.OnAction(plugin.Add, second); err != nil {
+	second := listItem(t, changes, "Unstaged", "b.txt")
+	if err := changes.OnAction(plugin.Add, second); err != nil {
 		t.Fatal(err)
 	}
-	stagedA := sidebarItem(t, host.sidebar, "Staged", "a.txt")
-	if err := host.sidebar.OnAction(plugin.Remove, stagedA); err != nil {
+	changes = changesList(t, host.view)
+	stagedA := listItem(t, changes, "Staged", "a.txt")
+	if err := changes.OnAction(plugin.Remove, stagedA); err != nil {
 		t.Fatal(err)
 	}
-	if host.sidebar.SelectedKind != "staged" || host.sidebar.SelectedValue != "b.txt" {
-		t.Fatalf("selection after unstaging a.txt = %s/%s", host.sidebar.SelectedKind, host.sidebar.SelectedValue)
+	changes = changesList(t, host.view)
+	if changes.SelectedKind != "staged" || changes.SelectedValue != "b.txt" {
+		t.Fatalf("selection after unstaging a.txt = %s/%s", changes.SelectedKind, changes.SelectedValue)
 	}
 
 	if err := os.WriteFile(filepath.Join(root, "c.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	refreshed, err := host.sidebar.OnRefresh()
+	refreshed, err := host.view.OnRefresh()
 	if err != nil {
 		t.Fatal(err)
 	}
-	added := sidebarItem(t, refreshed, "Unstaged", "c.txt")
+	added := listItem(t, changesList(t, refreshed), "Unstaged", "c.txt")
 	if added.Detail != "A" || added.DetailTone != plugin.ToneSuccess {
 		t.Fatalf("added status = %+v", added)
 	}
 }
 
-func sidebarItem(t *testing.T, sidebar plugin.Sidebar, sectionTitle, path string) plugin.SidebarItem {
+func changesList(t *testing.T, view plugin.View) *plugin.List {
 	t.Helper()
-	for _, section := range sidebar.Sections {
+	for _, pane := range view.Layout.Panes {
+		if pane.ID == "changes" && pane.List != nil {
+			return pane.List
+		}
+	}
+	t.Fatal("changes list not found")
+	return nil
+}
+
+func listItem(t *testing.T, list *plugin.List, sectionTitle, path string) plugin.ListItem {
+	t.Helper()
+	for _, section := range list.Sections {
 		if section.Title != sectionTitle {
 			continue
 		}
@@ -234,7 +298,7 @@ func sidebarItem(t *testing.T, sidebar plugin.Sidebar, sectionTitle, path string
 		}
 	}
 	t.Fatalf("%s item %q not found", sectionTitle, path)
-	return plugin.SidebarItem{}
+	return plugin.ListItem{}
 }
 
 func runGit(t *testing.T, root string, arguments ...string) string {

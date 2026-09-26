@@ -16,9 +16,12 @@ type testHost struct {
 	message  string
 }
 
-func (h *testHost) Root() string                      { return "" }
-func (h *testHost) CurrentPath() string               { return h.document.Path }
-func (h *testHost) CurrentDocument() plugin.Document  { return h.document }
+func (h *testHost) Root() string                     { return "" }
+func (h *testHost) CurrentPath() string              { return h.document.Path }
+func (h *testHost) CurrentDocument() plugin.Document { return h.document }
+func (h *testHost) NewView(plugin.View) plugin.ViewHandle {
+	return noopViewHandle{}
+}
 func (h *testHost) OpenSidebar(plugin.Sidebar)        {}
 func (h *testHost) CloseSidebar()                     {}
 func (h *testHost) OpenReadOnlyBuffer(string, []byte) {}
@@ -37,6 +40,12 @@ func (h *testHost) RegisterMode(mode plugin.Mode) error {
 	h.modes = append(h.modes, mode)
 	return nil
 }
+
+type noopViewHandle struct{}
+
+func (noopViewHandle) Show() bool              { return true }
+func (noopViewHandle) Update(plugin.View) bool { return true }
+func (noopViewHandle) Destroy()                {}
 
 func TestPluginRegistersGoModeAndCommands(t *testing.T) {
 	host := &testHost{commands: make(map[string]plugin.Command)}

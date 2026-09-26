@@ -98,7 +98,8 @@ and recently chosen commands appear first. Important commands include:
 - `search.project` — open the live workspace-search sidebar. Results are grouped
   by filename as the query changes; Up/Down selects matches and Enter opens one.
   Ripgrep is used when available, with a built-in recursive fallback.
-- `git.stage` — open the full-screen Git review view. It separates unstaged and
+- `git.stage` — open (or raise) the persistent Git Stage tab. Its horizontal
+  layout separates unstaged and
   staged files on the left and automatically previews the selected diff on the
   right. `+` stages, `-` unstages, and Enter or Tab focuses the diff; Tab returns
   to the changes list. Added and removed lines use green and red backgrounds,
@@ -215,11 +216,12 @@ session, or use `set theme = <id>` in `.myde` to select one at startup.
 
 Plugins register commands and editing modes through the public `plugin.Host`
 interface. A mode can associate file extensions with syntax, an LSP server,
-and a DAP adapter. Plugins can also inspect or replace the active document and
-open generic sidebars, text prompts, and read-only buffers without importing
-editor internals. The Git plugin in `plugins/git` owns Git subprocess and
-repository logic. The Go plugin in `plugins/golang` owns Go mode, `gopls`,
-Delve, and the `go.*` commands.
+and a DAP adapter. `Host.NewView` creates a persistent tab from generic layouts,
+list widgets, and document widgets; its handle can raise, update, or destroy the
+tab. Plugins can also inspect or replace the active document and open transient
+sidebars, text prompts, and read-only buffers without importing editor internals.
+The Git plugin in `plugins/git` owns Git subprocess and repository logic. The Go
+plugin in `plugins/golang` owns Go mode, `gopls`, Delve, and the `go.*` commands.
 
 ## Architecture
 
@@ -231,11 +233,11 @@ Delve, and the `go.*` commands.
 - `protocol` — Content-Length framed JSON transport, JSON-RPC/LSP process
   management, and Debug Adapter Protocol process management.
 - `plugin` — the command registration and host-service API used by plugins,
-  including reusable full-screen sidebars with asynchronous previews.
+  including persistent tabbed views composed from layouts and widgets.
 - `plugins/git` — Git staging, diffs, and commits implemented outside the editor
   core.
 - `plugins/golang` — Go mode, formatting, package commands, gopls, and Delve.
-- `editor` — commands, palettes, multi-cursor edits, generic sidebars,
+- `editor` — commands, palettes, multi-cursor edits, generic views and sidebars,
   extensions, LSP/DAP, search, hooks, and the VS Dark 2026 theme. Each editor
   buffer owns its syntax cache, diagnostics, breakpoints, mode, and terminal
   state rather than storing those in path-keyed application maps.
