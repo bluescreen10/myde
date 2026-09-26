@@ -107,6 +107,16 @@ func TestPluginStagesDiffsUnstagesAndCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 	unstaged := sidebarItem(t, host.sidebar, "Unstaged", "main.go")
+	if !host.sidebar.FullScreen || host.sidebar.OnPreview == nil {
+		t.Fatal("git stage did not open the full-screen review view")
+	}
+	preview, err := host.sidebar.OnPreview(unstaged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Syntax != "diff" || !bytes.Contains(preview.Content, []byte("+func main() {}")) {
+		t.Fatalf("unstaged preview = %+v", preview)
+	}
 	if err := host.sidebar.OnAction(plugin.Add, unstaged); err != nil {
 		t.Fatal(err)
 	}

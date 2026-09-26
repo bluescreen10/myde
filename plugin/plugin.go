@@ -68,16 +68,28 @@ type Mode struct {
 	DebugAdapter   DebugAdapter
 }
 
-// Sidebar describes an ephemeral, keyboard-driven panel on the left.
+// Sidebar describes an ephemeral, keyboard-driven panel. FullScreen gives the
+// panel a second, preview pane and lets Tab move focus between the two panes.
+// OnPreview runs in the background and should return self-contained data rather
+// than calling UI methods on Host.
 type Sidebar struct {
 	Title           string
 	Sections        []SidebarSection
 	SelectedValue   string
 	SelectedKind    string
+	FullScreen      bool
 	Help            []KeyHelp
 	OnAction        func(action Action, item SidebarItem) error
+	OnPreview       func(item SidebarItem) (SidebarPreview, error)
 	RefreshInterval time.Duration
 	OnRefresh       func() (Sidebar, error)
+}
+
+// SidebarPreview is the document shown beside a full-screen sidebar.
+type SidebarPreview struct {
+	Title   string
+	Content []byte
+	Syntax  string
 }
 
 // SidebarSection groups related panel items under a heading.

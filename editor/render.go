@@ -28,7 +28,10 @@ func (a *App) render() error {
 		statusRow--
 	}
 	sidebarWidth := a.renderSidebar(statusRow)
-	a.renderBuffer(sidebarWidth, width, statusRow)
+	fullScreenSidebar := a.sidebar != nil && a.sidebar.fullScreen
+	if !fullScreenSidebar {
+		a.renderBuffer(sidebarWidth, width, statusRow)
+	}
 	a.renderStatus(width, statusRow)
 	if a.palette != nil {
 		if a.palette.completion {
@@ -37,7 +40,7 @@ func (a *App) render() error {
 		} else {
 			a.renderPalette(width, statusRow)
 		}
-	} else if a.minibuffer == nil {
+	} else if a.minibuffer == nil && !fullScreenSidebar {
 		if item, ok := a.diagnosticAtCursor(); ok {
 			cursorX, cursorY := a.cursorPosition(sidebarWidth, statusRow)
 			a.renderDiagnostic(width, statusRow, cursorX, cursorY, item)
@@ -80,7 +83,8 @@ func (a *App) render() error {
 		cursorY = 2
 	}
 	softwareCursors := a.usesSoftwareCursors()
-	a.screen.SetCursorVisible(!softwareCursors)
+	hideCursor := softwareCursors || (fullScreenSidebar && a.palette == nil && a.minibuffer == nil)
+	a.screen.SetCursorVisible(!hideCursor)
 	if softwareCursors && a.cursorBlinkOn {
 		a.renderSoftwareCursors(sidebarWidth, statusRow)
 	}
@@ -124,6 +128,9 @@ func (a *App) renderSidebar(statusRow int) int {
 }
 
 func (a *App) renderPluginSidebar(statusRow int) int {
+	if a.sidebar.fullScreen {
+		return a.renderFullScreenSidebar(statusRow)
+	}
 	width, _ := a.screen.Size()
 	sidebarWidth := fileSidebarWidth(width)
 	panelHeight := statusRow - 1

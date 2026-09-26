@@ -13,7 +13,10 @@ than rebuilding an entire document.
 ## Build and run
 
 ```sh
-go build -o myde ./cmd/myde
+go install github.com/bluescreen10/myde@latest
+
+# Or build the current checkout:
+go build -o myde .
 ./myde .
 ./myde path/to/file.go
 ./myde -root path/to/project file.go
@@ -95,10 +98,12 @@ and recently chosen commands appear first. Important commands include:
 - `search.project` — open the live workspace-search sidebar. Results are grouped
   by filename as the query changes; Up/Down selects matches and Enter opens one.
   Ripgrep is used when available, with a built-in recursive fallback.
-- `git.stage` — open the ephemeral Git Changes sidebar. It separates unstaged
-  and staged files; `+` stages, `-` unstages, and Enter opens a read-only diff.
-  The list refreshes in the background, advances to the next file after an
-  action, and colors its right-aligned status as success, warning, or danger.
+- `git.stage` — open the full-screen Git review view. It separates unstaged and
+  staged files on the left and automatically previews the selected diff on the
+  right. `+` stages, `-` unstages, and Enter or Tab focuses the diff; Tab returns
+  to the changes list. Added and removed lines use green and red backgrounds,
+  with stronger highlighting on changed characters. The list refreshes in the
+  background and advances to the next file after an action.
 - `git.diff` and `git.diff staged` — open workspace changes in a read-only
   buffer.
 - `git.commit` — open a centered commit-message prompt and create the commit.
@@ -225,7 +230,8 @@ Delve, and the `go.*` commands.
   TypeScript, Python, shell, and C/C++.
 - `protocol` — Content-Length framed JSON transport, JSON-RPC/LSP process
   management, and Debug Adapter Protocol process management.
-- `plugin` — the command registration and host-service API used by plugins.
+- `plugin` — the command registration and host-service API used by plugins,
+  including reusable full-screen sidebars with asynchronous previews.
 - `plugins/git` — Git staging, diffs, and commits implemented outside the editor
   core.
 - `plugins/golang` — Go mode, formatting, package commands, gopls, and Delve.

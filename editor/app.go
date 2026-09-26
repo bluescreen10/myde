@@ -38,6 +38,13 @@ type sidebarRefreshEvent struct {
 	err     error
 }
 
+type sidebarPreviewEvent struct {
+	panel      *sidebarPanel
+	generation uint64
+	preview    plugin.SidebarPreview
+	err        error
+}
+
 type workspaceSearchEvent struct {
 	panel      *workspaceSearchPanel
 	generation uint64
@@ -60,6 +67,7 @@ type serverEvent struct {
 	terminal           *shellBuffer
 	terminalOutput     string
 	sidebarRefresh     *sidebarRefreshEvent
+	sidebarPreview     *sidebarPreviewEvent
 	workspaceSearch    *workspaceSearchEvent
 }
 
@@ -368,6 +376,9 @@ func (a *App) handleServerEvent(event serverEvent) {
 	if search := event.workspaceSearch; search != nil {
 		a.applyWorkspaceSearchEvent(search)
 	}
+	if preview := event.sidebarPreview; preview != nil {
+		a.applySidebarPreviewEvent(preview)
+	}
 	if refresh := event.sidebarRefresh; refresh != nil {
 		refresh.panel.refreshing = false
 		if refresh.panel == a.sidebar {
@@ -380,7 +391,15 @@ func (a *App) handleServerEvent(event serverEvent) {
 				}
 				replacement := newSidebarPanel(refresh.sidebar)
 				replacement.top = refresh.panel.top
+				replacement.previewFocused = refresh.panel.previewFocused
+				replacement.previewTop = refresh.panel.previewTop
+				replacement.previewLeft = refresh.panel.previewLeft
+				replacement.preview = refresh.panel.preview
+				replacement.previewLines = refresh.panel.previewLines
+				replacement.previewValue = refresh.panel.previewValue
+				replacement.previewKind = refresh.panel.previewKind
 				a.sidebar = replacement
+				a.requestSidebarPreview()
 			}
 		}
 	}

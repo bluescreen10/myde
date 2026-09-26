@@ -91,7 +91,8 @@ func (g *gitPlugin) stageSidebar(states []fileState, selectedKind, selectedValue
 		}
 	}
 	return plugin.Sidebar{
-		Title: "Git Changes",
+		Title:      "Git Changes",
+		FullScreen: true,
 		Sections: []plugin.SidebarSection{
 			{Title: "Unstaged", Items: unstaged},
 			{Title: "Staged", Items: staged},
@@ -101,9 +102,9 @@ func (g *gitPlugin) stageSidebar(states []fileState, selectedKind, selectedValue
 		Help: []plugin.KeyHelp{
 			{Key: "+", Label: "stage"},
 			{Key: "-", Label: "unstage"},
-			{Key: "Enter", Label: "diff"},
 		},
 		OnAction:        g.handleStageAction,
+		OnPreview:       g.previewDiff,
 		RefreshInterval: time.Second,
 		OnRefresh: func() (plugin.Sidebar, error) {
 			updated, err := g.status()
@@ -218,25 +219,9 @@ func (g *gitPlugin) diffCommand(arguments string) error {
 }
 
 func (g *gitPlugin) openDiff(staged bool, path string, untracked bool) error {
-	arguments := []string{"diff"}
-	if staged {
-		arguments = append(arguments, "--staged")
-	}
-	if path != "" {
-		arguments = append(arguments, "--", path)
-	}
-	var output []byte
-	var err error
-	if untracked {
-		output, err = g.runDiff("diff", "--no-index", "--", os.DevNull, path)
-	} else {
-		output, err = g.run(arguments...)
-	}
+	output, err := g.diff(staged, path, untracked)
 	if err != nil {
 		return err
-	}
-	if len(output) == 0 {
-		output = []byte("(no changes)\n")
 	}
 	label := "workspace"
 	if path != "" {
@@ -252,6 +237,45 @@ func (g *gitPlugin) openDiff(staged bool, path string, untracked bool) error {
 	name := fmt.Sprintf("git %s · %s.diff", kind, filepath.ToSlash(label))
 	g.host.OpenReadOnlyBuffer(name, output)
 	return nil
+}
+
+func (g *gitPlugin) previewDiff(item plugin.SidebarItem) (plugin.SidebarPreview, error) {
+	staged := item.Kind == stagedKind
+	output, err := g.diff(staged, item.Value, item.Data == "??")
+	if err != nil {
+		return plugin.SidebarPreview{}, err
+	}
+	kind := "Unstaged"
+	if staged {
+		kind = "Staged"
+	}
+	return plugin.SidebarPreview{
+		Title: kind + " · " + filepath.ToSlash(item.Value), Content: output, Syntax: "diff",
+	}, nil
+}
+
+func (g *gitPlugin) diff(staged bool, path string, untracked bool) ([]byte, error) {
+	arguments := []string{"diff"}
+	if staged {
+		arguments = append(arguments, "--staged")
+	}
+	if path != "" {
+		arguments = append(arguments, "--", path)
+	}
+	var output []byte
+	var err error
+	if untracked {
+		output, err = g.runDiff("diff", "--no-index", "--", os.DevNull, path)
+	} else {
+		output, err = g.run(arguments...)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(output) == 0 {
+		output = []byte("(no changes)\n")
+	}
+	return output, nil
 }
 
 func (g *gitPlugin) commitCommand(arguments string) error {
