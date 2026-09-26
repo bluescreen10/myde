@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/bluescreen10/myde/buffer"
-	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/syntax"
 	"github.com/bluescreen10/myde/terminal"
+	"github.com/bluescreen10/myde/ui"
 )
 
 func (a *App) render() error {
@@ -175,11 +175,11 @@ func (a *App) renderPluginSidebar(statusRow int) int {
 		if detail != "" {
 			detailStyle := style
 			switch entry.item.DetailTone {
-			case plugin.ToneSuccess:
+			case ui.ToneSuccess:
 				detailStyle.Foreground = a.theme.Success
-			case plugin.ToneWarning:
+			case ui.ToneWarning:
 				detailStyle.Foreground = a.theme.Warning
-			case plugin.ToneDanger:
+			case ui.ToneDanger:
 				detailStyle.Foreground = a.theme.Danger
 			}
 			a.screen.Text(sidebarWidth-detailWidth-2, y, detail, detailStyle)

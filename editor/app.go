@@ -19,6 +19,7 @@ import (
 	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/protocol"
 	"github.com/bluescreen10/myde/terminal"
+	"github.com/bluescreen10/myde/ui"
 )
 
 type diagnostic struct {
@@ -34,7 +35,7 @@ type diagnostic struct {
 
 type sidebarRefreshEvent struct {
 	panel   *sidebarPanel
-	sidebar plugin.Sidebar
+	sidebar ui.Sidebar
 	err     error
 }
 

@@ -1,110 +1,15 @@
 package editor
 
 import (
-	"strings"
-
-	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/terminal"
+	"github.com/bluescreen10/myde/ui"
 )
-
-type viewDocumentLineKind uint8
-
-const (
-	viewLinePlain viewDocumentLineKind = iota
-	viewLineMeta
-	viewLineHunk
-	viewLineAdded
-	viewLineRemoved
-)
-
-type viewDocumentLine struct {
-	text        string
-	kind        viewDocumentLineKind
-	changeStart int
-	changeEnd   int
-}
 
 type viewPaneBounds struct {
 	left   int
 	top    int
 	width  int
 	height int
-}
-
-func buildViewDocumentLines(document plugin.ViewDocument) []viewDocumentLine {
-	text := strings.ReplaceAll(string(document.Content), "\r\n", "\n")
-	text = strings.TrimSuffix(text, "\n")
-	if text == "" {
-		return nil
-	}
-	raw := strings.Split(text, "\n")
-	lines := make([]viewDocumentLine, len(raw))
-	for index, line := range raw {
-		lines[index] = viewDocumentLine{text: line}
-		if document.Syntax != "diff" {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(line, "diff "), strings.HasPrefix(line, "index "),
-			strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "),
-			strings.HasPrefix(line, "new file "), strings.HasPrefix(line, "deleted file "),
-			strings.HasPrefix(line, "rename from "), strings.HasPrefix(line, "rename to "):
-			lines[index].kind = viewLineMeta
-		case strings.HasPrefix(line, "@@"):
-			lines[index].kind = viewLineHunk
-		case strings.HasPrefix(line, "+"):
-			lines[index].kind = viewLineAdded
-		case strings.HasPrefix(line, "-"):
-			lines[index].kind = viewLineRemoved
-		}
-	}
-	if document.Syntax == "diff" {
-		markChangedViewCharacters(lines)
-	}
-	return lines
-}
-
-func markChangedViewCharacters(lines []viewDocumentLine) {
-	for index := 0; index < len(lines); {
-		if lines[index].kind != viewLineRemoved {
-			index++
-			continue
-		}
-		removedStart := index
-		for index < len(lines) && lines[index].kind == viewLineRemoved {
-			index++
-		}
-		addedStart := index
-		for index < len(lines) && lines[index].kind == viewLineAdded {
-			index++
-		}
-		pairs := min(addedStart-removedStart, index-addedStart)
-		for offset := 0; offset < pairs; offset++ {
-			removed := &lines[removedStart+offset]
-			added := &lines[addedStart+offset]
-			removedStartColumn, removedEndColumn, addedStartColumn, addedEndColumn :=
-				changedViewRuneRanges(strings.TrimPrefix(removed.text, "-"), strings.TrimPrefix(added.text, "+"))
-			removed.changeStart = removedStartColumn + 1
-			removed.changeEnd = removedEndColumn + 1
-			added.changeStart = addedStartColumn + 1
-			added.changeEnd = addedEndColumn + 1
-		}
-	}
-}
-
-func changedViewRuneRanges(before, after string) (int, int, int, int) {
-	left := []rune(before)
-	right := []rune(after)
-	prefix := 0
-	for prefix < len(left) && prefix < len(right) && left[prefix] == right[prefix] {
-		prefix++
-	}
-	suffix := 0
-	for suffix < len(left)-prefix && suffix < len(right)-prefix &&
-		left[len(left)-1-suffix] == right[len(right)-1-suffix] {
-		suffix++
-	}
-	return prefix, len(left) - suffix, prefix, len(right) - suffix
 }
 
 func (a *App) renderView(view *viewPanel, statusRow int) {
@@ -131,7 +36,7 @@ func layoutViewPanes(view *viewPanel, available viewPaneBounds) []viewPaneBounds
 	result := make([]viewPaneBounds, 0, count)
 	position := available.left
 	remaining := available.width + count - 1
-	if view.direction == plugin.LayoutVertical {
+	if view.direction == ui.LayoutVertical {
 		position = available.top
 		remaining = available.height + count - 1
 	}
@@ -144,7 +49,7 @@ func layoutViewPanes(view *viewPanel, available viewPaneBounds) []viewPaneBounds
 			size = min(max(3, size), max(3, remaining-minimumRemaining))
 		}
 		bounds := available
-		if view.direction == plugin.LayoutVertical {
+		if view.direction == ui.LayoutVertical {
 			bounds.top = position
 			bounds.height = size
 		} else {
@@ -169,8 +74,8 @@ func (a *App) renderViewPane(pane *viewPane, bounds viewPaneBounds, focused bool
 		border.Foreground = a.theme.Accent
 	}
 	title := pane.title
-	if pane.document.Title != "" {
-		title = pane.document.Title
+	if pane.content.Title != "" {
+		title = pane.content.Title
 	}
 	a.drawPanel(bounds.left, bounds.top, bounds.width, bounds.height, title, border.Foreground, panelStyle, border)
 	if bounds.height < 5 {
@@ -180,7 +85,7 @@ func (a *App) renderViewPane(pane *viewPane, bounds viewPaneBounds, focused bool
 		a.renderViewList(pane, bounds, panelStyle, border)
 		return
 	}
-	a.renderViewDocument(pane, bounds, panelStyle, border)
+	a.renderViewWidget(pane, bounds, panelStyle, border)
 }
 
 func (a *App) renderViewList(pane *viewPane, bounds viewPaneBounds, panelStyle, border terminal.Style) {
@@ -216,11 +121,11 @@ func (a *App) renderViewList(pane *viewPane, bounds viewPaneBounds, panelStyle, 
 		if detail != "" {
 			detailStyle := style
 			switch entry.item.DetailTone {
-			case plugin.ToneSuccess:
+			case ui.ToneSuccess:
 				detailStyle.Foreground = a.theme.Success
-			case plugin.ToneWarning:
+			case ui.ToneWarning:
 				detailStyle.Foreground = a.theme.Warning
-			case plugin.ToneDanger:
+			case ui.ToneDanger:
 				detailStyle.Foreground = a.theme.Danger
 			}
 			a.screen.Text(bounds.left+bounds.width-detailWidth-2, y, detail, detailStyle)
@@ -242,28 +147,28 @@ func (a *App) renderViewList(pane *viewPane, bounds viewPaneBounds, panelStyle, 
 	drawStyledText(a.screen, bounds.left+2, footer+1, bounds.width-4, help)
 }
 
-func (a *App) renderViewDocument(pane *viewPane, bounds viewPaneBounds, panelStyle, border terminal.Style) {
+func (a *App) renderViewWidget(pane *viewPane, bounds viewPaneBounds, panelStyle, border terminal.Style) {
 	contentWidth := max(0, bounds.width-2)
 	contentHeight := max(0, bounds.height-4)
-	maxLeft := max(0, pane.documentWidth()-contentWidth)
+	maxLeft := max(0, pane.widgetWidth()-contentWidth)
 	pane.left = min(pane.left, maxLeft)
-	pane.top = min(pane.top, max(0, len(pane.lines)-contentHeight))
+	pane.top = min(pane.top, max(0, len(pane.content.Lines)-contentHeight))
 	contentTop := bounds.top + 1
 	if pane.err != nil {
 		style := terminal.Style{Foreground: a.theme.Danger, Background: a.theme.Panel}
 		a.screen.Text(bounds.left+2, contentTop, truncate(pane.err.Error(), bounds.width-4), style)
-	} else if pane.loading && len(pane.lines) == 0 {
+	} else if pane.loading && len(pane.content.Lines) == 0 {
 		style := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
 		a.screen.Text(bounds.left+2, contentTop, "Loading…", style)
-	} else if len(pane.lines) == 0 {
+	} else if len(pane.content.Lines) == 0 {
 		style := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
 		a.screen.Text(bounds.left+2, contentTop, "(empty)", style)
 	} else {
-		for row := 0; row < contentHeight && pane.top+row < len(pane.lines); row++ {
-			line := pane.lines[pane.top+row]
-			style, changed := a.viewDocumentStyles(line.kind)
+		for row := 0; row < contentHeight && pane.top+row < len(pane.content.Lines); row++ {
+			line := pane.content.Lines[pane.top+row]
+			style := a.resolveWidgetStyle(panelStyle, line.Style)
 			fillRow(a.screen, bounds.left+1, contentTop+row, contentWidth, style)
-			a.drawViewDocumentLine(bounds.left+1, contentTop+row, contentWidth, pane.left, line, style, changed)
+			a.drawRichTextLine(bounds.left+1, contentTop+row, contentWidth, pane.left, line, style)
 		}
 	}
 	footer := bounds.top + bounds.height - 3
@@ -277,27 +182,42 @@ func (a *App) renderViewDocument(pane *viewPane, bounds viewPaneBounds, panelSty
 	drawStyledText(a.screen, bounds.left+2, footer+1, bounds.width-4, help)
 }
 
-func (a *App) viewDocumentStyles(kind viewDocumentLineKind) (terminal.Style, terminal.Style) {
-	style := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Panel}
-	changed := style
-	switch kind {
-	case viewLineMeta:
-		style.Foreground = a.theme.Muted
-		changed = style
-	case viewLineHunk:
-		style.Foreground = a.theme.Accent
-		style.Background = blendColor(a.theme.Panel, a.theme.Accent, 14)
-		changed = style
-	case viewLineAdded:
-		style.Background = blendColor(a.theme.Panel, a.theme.Success, 22)
-		changed = style
-		changed.Background = blendColor(a.theme.Panel, a.theme.Success, 44)
-	case viewLineRemoved:
-		style.Background = blendColor(a.theme.Panel, a.theme.Danger, 22)
-		changed = style
-		changed.Background = blendColor(a.theme.Panel, a.theme.Danger, 44)
+func (a *App) resolveWidgetStyle(base terminal.Style, style ui.WidgetStyle) terminal.Style {
+	if style.Foreground != ui.ToneDefault {
+		base.Foreground = a.widgetTone(style.Foreground)
 	}
-	return style, changed
+	if style.Background != ui.ToneDefault {
+		intensity := int(style.BackgroundIntensity)
+		if intensity == 0 {
+			intensity = 100
+		}
+		base.Background = blendColor(a.theme.Panel, a.widgetTone(style.Background), intensity)
+	}
+	if style.Bold {
+		base.Bold = true
+	}
+	return base
+}
+
+func (a *App) widgetTone(tone ui.Tone) terminal.Color {
+	switch tone {
+	case ui.ToneForeground:
+		return a.theme.Foreground
+	case ui.TonePanel:
+		return a.theme.Panel
+	case ui.ToneAccent:
+		return a.theme.Accent
+	case ui.ToneMuted:
+		return a.theme.Muted
+	case ui.ToneSuccess:
+		return a.theme.Success
+	case ui.ToneWarning:
+		return a.theme.Warning
+	case ui.ToneDanger:
+		return a.theme.Danger
+	default:
+		return a.theme.Foreground
+	}
 }
 
 func blendColor(base, tint terminal.Color, percent int) terminal.Color {
@@ -312,32 +232,42 @@ func blendColor(base, tint terminal.Color, percent int) terminal.Color {
 	}
 }
 
-func (a *App) drawViewDocumentLine(
+func (a *App) drawRichTextLine(
 	left, row, width, scroll int,
-	line viewDocumentLine,
-	style, changed terminal.Style,
+	line ui.RichTextLine,
+	lineStyle terminal.Style,
 ) {
 	displayColumn := 0
-	for column, value := range []rune(line.text) {
-		currentStyle := style
-		if column >= line.changeStart && column < line.changeEnd {
-			currentStyle = changed
+	for _, span := range line.Spans {
+		style := a.resolveWidgetStyle(lineStyle, span.Style)
+		if span.Positioned {
+			displayColumn = max(0, span.Column)
 		}
-		cellWidth := terminal.RuneWidth(value)
-		if value == '\t' {
-			cellWidth = 4 - displayColumn%4
-		}
-		if displayColumn+cellWidth > scroll && displayColumn-scroll < width {
-			x := left + max(0, displayColumn-scroll)
-			if value == '\t' || displayColumn < scroll {
-				for offset := max(scroll-displayColumn, 0); offset < cellWidth && x < left+width; offset++ {
-					a.screen.Set(x, row, ' ', currentStyle)
-					x++
-				}
-			} else if x+cellWidth <= left+width {
-				a.screen.Set(x, row, value, currentStyle)
+		for _, value := range []rune(span.Text) {
+			value = safeWidgetRune(value)
+			cellWidth := terminal.RuneWidth(value)
+			if value == '\t' {
+				cellWidth = 4 - displayColumn%4
 			}
+			if displayColumn+cellWidth > scroll && displayColumn-scroll < width {
+				x := left + max(0, displayColumn-scroll)
+				if value == '\t' || displayColumn < scroll {
+					for offset := max(scroll-displayColumn, 0); offset < cellWidth && x < left+width; offset++ {
+						a.screen.Set(x, row, ' ', style)
+						x++
+					}
+				} else if x+cellWidth <= left+width {
+					a.screen.Set(x, row, value, style)
+				}
+			}
+			displayColumn += cellWidth
 		}
-		displayColumn += cellWidth
 	}
+}
+
+func safeWidgetRune(value rune) rune {
+	if value != '\t' && (value < ' ' || value == 0x7f) {
+		return '�'
+	}
+	return value
 }

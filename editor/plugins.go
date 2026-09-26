@@ -7,6 +7,7 @@ import (
 
 	"github.com/bluescreen10/myde/buffer"
 	"github.com/bluescreen10/myde/plugin"
+	"github.com/bluescreen10/myde/ui"
 )
 
 // Root returns the absolute workspace root.
@@ -80,7 +81,7 @@ func (a *App) RegisterCommand(name string, command plugin.Command) error {
 }
 
 // OpenSidebar displays an ephemeral plugin panel on the left.
-func (a *App) OpenSidebar(sidebar plugin.Sidebar) {
+func (a *App) OpenSidebar(sidebar ui.Sidebar) {
 	a.closeFileBrowser()
 	a.closeWorkspaceSearch()
 	a.sidebar = newSidebarPanel(sidebar)

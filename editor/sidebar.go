@@ -3,13 +3,13 @@ package editor
 import (
 	"time"
 
-	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/terminal"
+	"github.com/bluescreen10/myde/ui"
 )
 
 type sidebarRow struct {
 	title string
-	item  plugin.SidebarItem
+	item  ui.SidebarItem
 	set   bool
 }
 
@@ -18,18 +18,18 @@ type sidebarPanel struct {
 	rows            []sidebarRow
 	selected        int
 	top             int
-	help            []plugin.KeyHelp
-	onAction        func(plugin.Action, plugin.SidebarItem) error
-	onRefresh       func() (plugin.Sidebar, error)
+	help            []ui.KeyHelp
+	onAction        func(ui.Action, ui.SidebarItem) error
+	onRefresh       func() (ui.Sidebar, error)
 	refreshInterval time.Duration
 	nextRefresh     time.Time
 	refreshing      bool
 }
 
-func newSidebarPanel(sidebar plugin.Sidebar) *sidebarPanel {
+func newSidebarPanel(sidebar ui.Sidebar) *sidebarPanel {
 	panel := &sidebarPanel{
 		title:           sidebar.Title,
-		help:            append([]plugin.KeyHelp(nil), sidebar.Help...),
+		help:            append([]ui.KeyHelp(nil), sidebar.Help...),
 		onAction:        sidebar.OnAction,
 		onRefresh:       sidebar.OnRefresh,
 		refreshInterval: sidebar.RefreshInterval,
@@ -60,9 +60,9 @@ func newSidebarPanel(sidebar plugin.Sidebar) *sidebarPanel {
 	return panel
 }
 
-func (p *sidebarPanel) selectedItem() (plugin.SidebarItem, bool) {
+func (p *sidebarPanel) selectedItem() (ui.SidebarItem, bool) {
 	if p.selected < 0 || p.selected >= len(p.rows) || !p.rows[p.selected].set {
-		return plugin.SidebarItem{}, false
+		return ui.SidebarItem{}, false
 	}
 	return p.rows[p.selected].item, true
 }
@@ -143,7 +143,7 @@ func (a *App) handleSidebarEvent(event terminal.Event) error {
 	case terminal.KeyEnd:
 		panel.moveToEnd(true)
 	case terminal.KeyEnter:
-		return panel.perform(plugin.Activate)
+		return panel.perform(ui.Activate)
 	case terminal.KeyTab:
 		a.CloseSidebar()
 	case terminal.KeyRune:
@@ -152,15 +152,15 @@ func (a *App) handleSidebarEvent(event terminal.Event) error {
 		}
 		switch event.Rune {
 		case '+':
-			return panel.perform(plugin.Add)
+			return panel.perform(ui.Add)
 		case '-':
-			return panel.perform(plugin.Remove)
+			return panel.perform(ui.Remove)
 		}
 	}
 	return nil
 }
 
-func (p *sidebarPanel) perform(action plugin.Action) error {
+func (p *sidebarPanel) perform(action ui.Action) error {
 	if p.onAction == nil || p.selected < 0 || p.selected >= len(p.rows) {
 		return nil
 	}

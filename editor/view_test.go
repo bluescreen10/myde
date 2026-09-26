@@ -8,23 +8,24 @@ import (
 	"github.com/bluescreen10/myde/buffer"
 	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/terminal"
+	"github.com/bluescreen10/myde/ui"
 )
 
 func TestViewListLoadsPreviewAndSwitchesPaneFocus(t *testing.T) {
-	view := plugin.View{
+	view := ui.View{
 		Title: "Review",
-		Layout: plugin.Layout{Direction: plugin.LayoutHorizontal, Panes: []plugin.Pane{
-			{ID: "files", List: &plugin.List{
-				Sections: []plugin.ListSection{{Title: "Files", Items: []plugin.ListItem{
+		Layout: ui.Layout{Direction: ui.LayoutHorizontal, Panes: []ui.Pane{
+			{ID: "files", List: &ui.List{
+				Sections: []ui.ListSection{{Title: "Files", Items: []ui.ListItem{
 					{Label: "a.go", Value: "a.go", Kind: "unstaged"},
 					{Label: "b.go", Value: "b.go", Kind: "unstaged"},
 				}}},
 				PreviewPane: "preview",
-				OnSelect: func(item plugin.ListItem) (plugin.ViewDocument, error) {
-					return plugin.ViewDocument{Title: item.Value, Content: []byte(item.Value + "\n"), Syntax: "diff"}, nil
+				OnSelect: func(item ui.ListItem) (ui.Widget, error) {
+					return ui.TextWidget{Title: item.Value, Content: []byte(item.Value + "\n")}, nil
 				},
 			}},
-			{ID: "preview", Document: &plugin.ViewDocument{Syntax: "diff"}},
+			{ID: "preview"},
 		}},
 	}
 	panel := newViewPanel(1, view)
@@ -35,14 +36,15 @@ func TestViewListLoadsPreviewAndSwitchesPaneFocus(t *testing.T) {
 
 	app.requestViewSelections(panel)
 	preview := panel.paneByID("preview")
-	if preview.document.Title != "a.go" || len(preview.lines) != 1 || preview.lines[0].text != "a.go" {
-		t.Fatalf("initial preview = %+v, lines = %+v", preview.document, preview.lines)
+	if preview.content.Title != "a.go" || len(preview.content.Lines) != 1 ||
+		preview.content.Lines[0].Spans[0].Text != "a.go" {
+		t.Fatalf("initial preview = %+v", preview.content)
 	}
 	if err := app.handleViewEvent(terminal.Event{Key: terminal.KeyDown}); err != nil {
 		t.Fatal(err)
 	}
-	if preview.document.Title != "b.go" || preview.lines[0].text != "b.go" {
-		t.Fatalf("selected preview = %+v, lines = %+v", preview.document, preview.lines)
+	if preview.content.Title != "b.go" || preview.content.Lines[0].Spans[0].Text != "b.go" {
+		t.Fatalf("selected preview = %+v", preview.content)
 	}
 	if err := app.handleViewEvent(terminal.Event{Key: terminal.KeyEnter}); err != nil {
 		t.Fatal(err)
@@ -59,11 +61,11 @@ func TestViewListLoadsPreviewAndSwitchesPaneFocus(t *testing.T) {
 }
 
 func TestViewUpdateHonorsExplicitSelectionAndPreservesImplicitSelection(t *testing.T) {
-	definition := func(selected string) plugin.View {
-		return plugin.View{Layout: plugin.Layout{Panes: []plugin.Pane{{
+	definition := func(selected string) ui.View {
+		return ui.View{Layout: ui.Layout{Panes: []ui.Pane{{
 			ID: "files",
-			List: &plugin.List{
-				Sections: []plugin.ListSection{{Items: []plugin.ListItem{
+			List: &ui.List{
+				Sections: []ui.ListSection{{Items: []ui.ListItem{
 					{Value: "a", Kind: "unstaged"},
 					{Value: "b", Kind: "unstaged"},
 					{Value: "c", Kind: "unstaged"},
@@ -93,12 +95,11 @@ func TestViewUpdateHonorsExplicitSelectionAndPreservesImplicitSelection(t *testi
 func TestViewHandleUsesBufferTabLifecycle(t *testing.T) {
 	app := &App{
 		screen:         terminal.NewScreen(io.Discard, 80, 24),
-		browser:        newFileBrowser("", nil, nil),
 		modes:          map[string]plugin.Mode{modeKey("Plain Text"): {Name: "Plain Text", Syntax: "plain"}},
 		extensionModes: make(map[string]string),
 	}
 	app.addBuffer(buffer.New())
-	handle := app.NewView(plugin.View{Title: "Review", Layout: plugin.Layout{Panes: []plugin.Pane{{ID: "one"}}}})
+	handle := app.NewView(ui.View{Title: "Review", Layout: ui.Layout{Panes: []ui.Pane{{ID: "one"}}}})
 	if len(app.buffers) != 2 || app.active != 1 || app.currentView() == nil {
 		t.Fatalf("view tab state: buffers=%d active=%d view=%v", len(app.buffers), app.active, app.currentView())
 	}
@@ -106,24 +107,73 @@ func TestViewHandleUsesBufferTabLifecycle(t *testing.T) {
 		t.Fatal("live view handle could not raise its tab")
 	}
 	handle.Destroy()
-	if len(app.buffers) != 1 || handle.Show() {
-		t.Fatalf("destroyed view state: buffers=%d show=%v", len(app.buffers), handle.Show())
+	shown := handle.Show()
+	if len(app.buffers) != 1 || shown {
+		t.Fatalf("destroyed view state: buffers=%d show=%v", len(app.buffers), shown)
+	}
+}
+
+func TestViewIgnoresResponsesFromReplacedPanes(t *testing.T) {
+	old := newViewPanel(1, ui.View{Layout: ui.Layout{Panes: []ui.Pane{
+		{ID: "preview"},
+	}}})
+	oldPane := old.panes[0]
+	oldPane.generation = 1
+	replacement := newViewPanel(1, ui.View{Layout: ui.Layout{Panes: []ui.Pane{
+		{ID: "preview"},
+	}}})
+	replacement.panes[0].generation = 1
+	app := &App{buffers: []*editorBuffer{{text: buffer.NewReadOnly("Review", nil), view: replacement}}}
+
+	app.applyViewPreviewEvent(&viewPreviewEvent{
+		viewID: 1, paneID: "preview", pane: oldPane, generation: 1,
+		widget: ui.TextWidget{Content: []byte("stale")},
+	})
+	if len(replacement.panes[0].content.Lines) != 0 {
+		t.Fatalf("stale preview replaced current content: %+v", replacement.panes[0].content)
+	}
+
+	app.applyViewRefreshEvent(&viewRefreshEvent{
+		viewID: 1, view: old,
+		updated: ui.View{Title: "Stale", Layout: ui.Layout{Panes: []ui.Pane{{ID: "preview"}}}},
+	})
+	if app.currentView() != replacement || app.currentView().title == "Stale" {
+		t.Fatal("stale refresh replaced the current view")
+	}
+}
+
+func TestViewClearsPreviewWhenListBecomesEmpty(t *testing.T) {
+	panel := newViewPanel(1, ui.View{Layout: ui.Layout{Panes: []ui.Pane{
+		{ID: "files", List: &ui.List{
+			Sections:    []ui.ListSection{{Title: "Files"}},
+			PreviewPane: "preview",
+			OnSelect: func(ui.ListItem) (ui.Widget, error) {
+				return ui.TextWidget{}, nil
+			},
+		}},
+		{ID: "preview", Widget: ui.TextWidget{Content: []byte("old")}},
+	}}})
+	app := &App{buffers: []*editorBuffer{{text: buffer.NewReadOnly("Review", nil), view: panel}}}
+	app.requestViewSelections(panel)
+	preview := panel.paneByID("preview")
+	if preview.widget != nil || len(preview.content.Lines) != 0 {
+		t.Fatalf("empty list retained preview %+v", preview.content)
 	}
 }
 
 func TestViewBackgroundRefreshPreservesSelection(t *testing.T) {
 	refreshes := 0
-	view := plugin.View{
-		Layout: plugin.Layout{Panes: []plugin.Pane{{ID: "files", List: &plugin.List{
-			Sections:      []plugin.ListSection{{Items: []plugin.ListItem{{Value: "a"}, {Value: "b"}}}},
+	view := ui.View{
+		Layout: ui.Layout{Panes: []ui.Pane{{ID: "files", List: &ui.List{
+			Sections:      []ui.ListSection{{Items: []ui.ListItem{{Value: "a"}, {Value: "b"}}}},
 			SelectedValue: "b",
 		}}}},
 		RefreshInterval: time.Millisecond,
-		OnRefresh: func() (plugin.View, error) {
+		OnRefresh: func() (ui.View, error) {
 			refreshes++
-			return plugin.View{
-				Layout: plugin.Layout{Panes: []plugin.Pane{{ID: "files", List: &plugin.List{
-					Sections: []plugin.ListSection{{Items: []plugin.ListItem{{Value: "b"}, {Value: "c"}}}},
+			return ui.View{
+				Layout: ui.Layout{Panes: []ui.Pane{{ID: "files", List: &ui.List{
+					Sections: []ui.ListSection{{Items: []ui.ListItem{{Value: "b"}, {Value: "c"}}}},
 				}}}},
 				RefreshInterval: time.Millisecond,
 			}, nil
@@ -148,15 +198,32 @@ func TestViewBackgroundRefreshPreservesSelection(t *testing.T) {
 	}
 }
 
-func TestViewDiffLinesMarkChangedCharacters(t *testing.T) {
-	lines := buildViewDocumentLines(plugin.ViewDocument{
-		Syntax:  "diff",
-		Content: []byte("@@ -1 +1 @@\n-old value\n+new value\n"),
-	})
-	if len(lines) != 3 || lines[0].kind != viewLineHunk || lines[1].kind != viewLineRemoved || lines[2].kind != viewLineAdded {
-		t.Fatalf("diff lines = %+v", lines)
+func TestRichTextWidgetPlacementAndSemanticStyle(t *testing.T) {
+	content := ui.WidgetContent{Lines: []ui.RichTextLine{{Spans: []ui.RichTextSpan{
+		{Text: "ab"},
+		{Text: "x", Positioned: true, Column: 8},
+		{Text: "\tZ", Style: ui.WidgetStyle{Foreground: ui.ToneAccent}},
+	}}}}
+	panel := newViewPanel(1, ui.View{Layout: ui.Layout{Panes: []ui.Pane{{
+		ID: "rich", Widget: content,
+	}}}})
+	if width := panel.panes[0].widgetWidth(); width != 13 {
+		t.Fatalf("rich-text width = %d, want 13", width)
 	}
-	if lines[1].changeStart == lines[1].changeEnd || lines[2].changeStart == lines[2].changeEnd {
-		t.Fatalf("changed character ranges were not marked: %+v", lines)
+	if got := safeWidgetRune('\x1b'); got != '�' {
+		t.Fatalf("escape rune rendered as %q", got)
+	}
+
+	app := &App{theme: Theme{
+		Foreground: terminal.Color{R: 200, G: 200, B: 200},
+		Panel:      terminal.Color{R: 10, G: 20, B: 30},
+		Danger:     terminal.Color{R: 210, G: 20, B: 30},
+	}}
+	resolved := app.resolveWidgetStyle(terminal.Style{
+		Foreground: app.theme.Foreground, Background: app.theme.Panel,
+	}, ui.WidgetStyle{Background: ui.ToneDanger, BackgroundIntensity: 50})
+	want := blendColor(app.theme.Panel, app.theme.Danger, 50)
+	if resolved.Background != want {
+		t.Fatalf("semantic background = %+v, want %+v", resolved.Background, want)
 	}
 }

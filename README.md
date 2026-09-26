@@ -99,8 +99,8 @@ and recently chosen commands appear first. Important commands include:
   by filename as the query changes; Up/Down selects matches and Enter opens one.
   Ripgrep is used when available, with a built-in recursive fallback.
 - `git.stage` — open (or raise) the persistent Git Stage tab. Its horizontal
-  layout separates unstaged and
-  staged files on the left and automatically previews the selected diff on the
+  layout separates unstaged and staged files on the left and automatically
+  previews the selected diff on the
   right. `+` stages, `-` unstages, and Enter or Tab focuses the diff; Tab returns
   to the changes list. Added and removed lines use green and red backgrounds,
   with stronger highlighting on changed characters. The list refreshes in the
@@ -215,10 +215,13 @@ session, or use `set theme = <id>` in `.myde` to select one at startup.
 ## Plugins
 
 Plugins register commands and editing modes through the public `plugin.Host`
-interface. A mode can associate file extensions with syntax, an LSP server,
-and a DAP adapter. `Host.NewView` creates a persistent tab from generic layouts,
-list widgets, and document widgets; its handle can raise, update, or destroy the
-tab. Plugins can also inspect or replace the active document and open transient
+interface and describe UI through the shared `ui` package. A mode can associate
+file extensions with syntax, an LSP server, and a DAP adapter. `Host.NewView`
+creates a persistent tab from generic layouts, list widgets, and rich-text
+widgets; its handle can raise, update, or destroy the tab. Custom widgets return
+rich-text lines and spans with semantic theme tones and optional display-column
+placement; they never emit terminal escape codes.
+Plugins can also inspect or replace the active document and open transient
 sidebars, text prompts, and read-only buffers without importing editor internals.
 The Git plugin in `plugins/git` owns Git subprocess and repository logic. The Go
 plugin in `plugins/golang` owns Go mode, `gopls`, Delve, and the `go.*` commands.
@@ -232,8 +235,10 @@ plugin in `plugins/golang` owns Go mode, `gopls`, Delve, and the `go.*` commands
   TypeScript, Python, shell, and C/C++.
 - `protocol` — Content-Length framed JSON transport, JSON-RPC/LSP process
   management, and Debug Adapter Protocol process management.
-- `plugin` — the command registration and host-service API used by plugins,
-  including persistent tabbed views composed from layouts and widgets.
+- `ui` — shared view, layout, widget, rich-text, sidebar, and semantic-style
+  definitions used by both the editor and plugins.
+- `plugin` — the command registration, editing-mode, and host-service boundary
+  used by plugins; host UI methods accept types from `ui`.
 - `plugins/git` — Git staging, diffs, and commits implemented outside the editor
   core.
 - `plugins/golang` — Go mode, formatting, package commands, gopls, and Delve.

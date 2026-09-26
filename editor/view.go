@@ -5,13 +5,13 @@ import (
 	"time"
 
 	"github.com/bluescreen10/myde/buffer"
-	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/terminal"
+	"github.com/bluescreen10/myde/ui"
 )
 
 type viewRow struct {
 	title string
-	item  plugin.ListItem
+	item  ui.ListItem
 	set   bool
 }
 
@@ -20,10 +20,10 @@ type viewList struct {
 	selected     int
 	top          int
 	selectionSet bool
-	help         []plugin.KeyHelp
+	help         []ui.KeyHelp
 	previewPane  string
-	onAction     func(plugin.Action, plugin.ListItem) error
-	onSelect     func(plugin.ListItem) (plugin.ViewDocument, error)
+	onAction     func(ui.Action, ui.ListItem) error
+	onSelect     func(ui.ListItem) (ui.Widget, error)
 }
 
 type viewPane struct {
@@ -31,8 +31,8 @@ type viewPane struct {
 	title         string
 	weight        int
 	list          *viewList
-	document      plugin.ViewDocument
-	lines         []viewDocumentLine
+	widget        ui.Widget
+	content       ui.WidgetContent
 	top           int
 	left          int
 	loading       bool
@@ -45,10 +45,10 @@ type viewPane struct {
 type viewPanel struct {
 	id              uint64
 	title           string
-	direction       plugin.LayoutDirection
+	direction       ui.LayoutDirection
 	panes           []*viewPane
 	focus           int
-	onRefresh       func() (plugin.View, error)
+	onRefresh       func() (ui.View, error)
 	refreshInterval time.Duration
 	nextRefresh     time.Time
 	refreshing      bool
@@ -57,15 +57,18 @@ type viewPanel struct {
 type viewPreviewEvent struct {
 	viewID     uint64
 	paneID     string
+	pane       *viewPane
 	generation uint64
-	document   plugin.ViewDocument
+	widget     ui.Widget
+	content    ui.WidgetContent
 	err        error
 }
 
 type viewRefreshEvent struct {
-	viewID uint64
-	view   plugin.View
-	err    error
+	viewID  uint64
+	view    *viewPanel
+	updated ui.View
+	err     error
 }
 
 type viewHandle struct {
@@ -73,7 +76,7 @@ type viewHandle struct {
 	id  uint64
 }
 
-func newViewPanel(id uint64, view plugin.View) *viewPanel {
+func newViewPanel(id uint64, view ui.View) *viewPanel {
 	panel := &viewPanel{
 		id:              id,
 		title:           view.Title,
@@ -82,7 +85,7 @@ func newViewPanel(id uint64, view plugin.View) *viewPanel {
 		refreshInterval: view.RefreshInterval,
 	}
 	if panel.direction == "" {
-		panel.direction = plugin.LayoutHorizontal
+		panel.direction = ui.LayoutHorizontal
 	}
 	if panel.onRefresh != nil && panel.refreshInterval > 0 {
 		panel.nextRefresh = time.Now().Add(panel.refreshInterval)
@@ -97,18 +100,18 @@ func newViewPanel(id uint64, view plugin.View) *viewPanel {
 		if definition.List != nil {
 			pane.list = newViewList(*definition.List)
 		}
-		if definition.Document != nil {
-			pane.document = cloneViewDocument(*definition.Document)
-			pane.lines = buildViewDocumentLines(pane.document)
+		if definition.Widget != nil {
+			pane.widget = definition.Widget
+			pane.content = renderWidget(definition.Widget)
 		}
 		panel.panes = append(panel.panes, pane)
 	}
 	return panel
 }
 
-func newViewList(definition plugin.List) *viewList {
+func newViewList(definition ui.List) *viewList {
 	list := &viewList{
-		help:         append([]plugin.KeyHelp(nil), definition.Help...),
+		help:         append([]ui.KeyHelp(nil), definition.Help...),
 		previewPane:  definition.PreviewPane,
 		onAction:     definition.OnAction,
 		onSelect:     definition.OnSelect,
@@ -131,14 +134,25 @@ func newViewList(definition plugin.List) *viewList {
 	return list
 }
 
-func cloneViewDocument(document plugin.ViewDocument) plugin.ViewDocument {
-	document.Content = append([]byte(nil), document.Content...)
-	return document
+func renderWidget(widget ui.Widget) ui.WidgetContent {
+	if widget == nil {
+		return ui.WidgetContent{}
+	}
+	return cloneWidgetContent(widget.RenderWidget())
 }
 
-func (l *viewList) selectedItem() (plugin.ListItem, bool) {
+func cloneWidgetContent(content ui.WidgetContent) ui.WidgetContent {
+	cloned := ui.WidgetContent{Title: content.Title, Lines: make([]ui.RichTextLine, len(content.Lines))}
+	for index, line := range content.Lines {
+		cloned.Lines[index] = line
+		cloned.Lines[index].Spans = append([]ui.RichTextSpan(nil), line.Spans...)
+	}
+	return cloned
+}
+
+func (l *viewList) selectedItem() (ui.ListItem, bool) {
 	if l == nil || l.selected < 0 || l.selected >= len(l.rows) || !l.rows[l.selected].set {
-		return plugin.ListItem{}, false
+		return ui.ListItem{}, false
 	}
 	return l.rows[l.selected].item, true
 }
@@ -218,7 +232,7 @@ func (v *viewPanel) paneByID(id string) *viewPane {
 	return nil
 }
 
-func (a *App) NewView(view plugin.View) plugin.ViewHandle {
+func (a *App) NewView(view ui.View) ui.ViewHandle {
 	a.nextViewID++
 	id := a.nextViewID
 	title := view.Title
@@ -252,7 +266,7 @@ func (h *viewHandle) Show() bool {
 	return true
 }
 
-func (h *viewHandle) Update(view plugin.View) bool {
+func (h *viewHandle) Update(view ui.View) bool {
 	index, current := h.app.viewByID(h.id)
 	if index < 0 {
 		return false
@@ -310,9 +324,9 @@ func preserveViewState(previous, replacement *viewPanel) {
 			}
 			pane.list.top = old.list.top
 		}
-		if pane.document.Content == nil && len(old.document.Content) > 0 {
-			pane.document = cloneViewDocument(old.document)
-			pane.lines = append([]viewDocumentLine(nil), old.lines...)
+		if pane.widget == nil && old.widget != nil {
+			pane.widget = old.widget
+			pane.content = cloneWidgetContent(old.content)
 		}
 		pane.top = old.top
 		pane.left = old.left
@@ -341,7 +355,7 @@ func (a *App) handleViewEvent(event terminal.Event) error {
 	if pane.list != nil {
 		return a.handleViewListEvent(view, pane, event)
 	}
-	return a.handleViewDocumentEvent(pane, event)
+	return a.handleViewWidgetEvent(pane, event)
 }
 
 func (a *App) handleViewListEvent(view *viewPanel, pane *viewPane, event terminal.Event) error {
@@ -371,16 +385,16 @@ func (a *App) handleViewListEvent(view *viewPanel, pane *viewPane, event termina
 				}
 			}
 		}
-		return list.perform(plugin.Activate)
+		return list.perform(ui.Activate)
 	case terminal.KeyRune:
 		if event.Control || event.Alt || event.Super {
 			return nil
 		}
 		switch event.Rune {
 		case '+':
-			return list.perform(plugin.Add)
+			return list.perform(ui.Add)
 		case '-':
-			return list.perform(plugin.Remove)
+			return list.perform(ui.Remove)
 		}
 	}
 	if list.selected != before {
@@ -389,8 +403,8 @@ func (a *App) handleViewListEvent(view *viewPanel, pane *viewPane, event termina
 	return nil
 }
 
-func (a *App) handleViewDocumentEvent(pane *viewPane, event terminal.Event) error {
-	visibleRows := a.viewDocumentHeight()
+func (a *App) handleViewWidgetEvent(pane *viewPane, event terminal.Event) error {
+	visibleRows := a.viewWidgetHeight()
 	switch event.Key {
 	case terminal.KeyUp:
 		pane.top--
@@ -403,18 +417,18 @@ func (a *App) handleViewDocumentEvent(pane *viewPane, event terminal.Event) erro
 	case terminal.KeyHome:
 		pane.top = 0
 	case terminal.KeyEnd:
-		pane.top = len(pane.lines) - visibleRows
+		pane.top = len(pane.content.Lines) - visibleRows
 	case terminal.KeyLeft:
 		pane.left--
 	case terminal.KeyRight:
 		pane.left++
 	}
-	pane.top = min(max(0, pane.top), max(0, len(pane.lines)-visibleRows))
-	pane.left = min(max(0, pane.left), max(0, pane.documentWidth()-1))
+	pane.top = min(max(0, pane.top), max(0, len(pane.content.Lines)-visibleRows))
+	pane.left = min(max(0, pane.left), max(0, pane.widgetWidth()-1))
 	return nil
 }
 
-func (l *viewList) perform(action plugin.Action) error {
+func (l *viewList) perform(action ui.Action) error {
 	item, ok := l.selectedItem()
 	if !ok || l.onAction == nil {
 		return nil
@@ -422,15 +436,29 @@ func (l *viewList) perform(action plugin.Action) error {
 	return l.onAction(action, item)
 }
 
-func (p *viewPane) documentWidth() int {
+func (p *viewPane) widgetWidth() int {
 	width := 0
-	for _, line := range p.lines {
-		width = max(width, displayWidth(line.text))
+	for _, line := range p.content.Lines {
+		column := 0
+		for _, span := range line.Spans {
+			if span.Positioned {
+				column = max(0, span.Column)
+			}
+			for _, value := range []rune(span.Text) {
+				value = safeWidgetRune(value)
+				if value == '\t' {
+					column += 4 - column%4
+				} else {
+					column += terminal.RuneWidth(value)
+				}
+			}
+			width = max(width, column)
+		}
 	}
 	return width
 }
 
-func (a *App) viewDocumentHeight() int {
+func (a *App) viewWidgetHeight() int {
 	_, height := a.screen.Size()
 	return max(1, height-6)
 }
@@ -447,7 +475,19 @@ func (a *App) requestViewSelection(view *viewPanel, pane *viewPane) {
 	list := pane.list
 	item, ok := list.selectedItem()
 	target := view.paneByID(list.previewPane)
-	if !ok || target == nil || list.onSelect == nil {
+	if target == nil || list.onSelect == nil {
+		return
+	}
+	if !ok {
+		target.generation++
+		target.selectedKind = ""
+		target.selectedValue = ""
+		target.widget = nil
+		target.content = ui.WidgetContent{}
+		target.top = 0
+		target.left = 0
+		target.loading = false
+		target.err = nil
 		return
 	}
 	target.generation++
@@ -457,24 +497,28 @@ func (a *App) requestViewSelection(view *viewPanel, pane *viewPane) {
 	target.loading = true
 	target.err = nil
 	if selectionChanged {
-		target.document.Content = nil
-		target.lines = nil
+		target.widget = nil
+		target.content = ui.WidgetContent{}
 		target.top = 0
 		target.left = 0
 	}
 	generation := target.generation
 	load := list.onSelect
 	if a.servers == nil {
-		document, err := load(item)
+		widget, err := load(item)
+		content := renderWidget(widget)
 		a.applyViewPreviewEvent(&viewPreviewEvent{
-			viewID: view.id, paneID: target.id, generation: generation, document: document, err: err,
+			viewID: view.id, paneID: target.id, pane: target,
+			generation: generation, widget: widget, content: content, err: err,
 		})
 		return
 	}
 	go func() {
-		document, err := load(item)
+		widget, err := load(item)
+		content := renderWidget(widget)
 		a.servers <- serverEvent{viewPreview: &viewPreviewEvent{
-			viewID: view.id, paneID: target.id, generation: generation, document: document, err: err,
+			viewID: view.id, paneID: target.id, pane: target,
+			generation: generation, widget: widget, content: content, err: err,
 		}}
 	}()
 }
@@ -485,7 +529,7 @@ func (a *App) applyViewPreviewEvent(event *viewPreviewEvent) {
 		return
 	}
 	pane := view.paneByID(event.paneID)
-	if pane == nil || pane.generation != event.generation {
+	if pane == nil || pane != event.pane || pane.generation != event.generation {
 		return
 	}
 	pane.loading = false
@@ -493,8 +537,8 @@ func (a *App) applyViewPreviewEvent(event *viewPreviewEvent) {
 	if event.err != nil {
 		return
 	}
-	pane.document = cloneViewDocument(event.document)
-	pane.lines = buildViewDocumentLines(pane.document)
+	pane.widget = event.widget
+	pane.content = cloneWidgetContent(event.content)
 }
 
 func (a *App) pollViewRefreshes() {
@@ -507,10 +551,19 @@ func (a *App) pollViewRefreshes() {
 		view.refreshing = true
 		view.nextRefresh = time.Now().Add(view.refreshInterval)
 		refresh := view.onRefresh
-		go func(id uint64) {
+		if a.servers == nil {
 			updated, err := refresh()
-			a.servers <- serverEvent{viewRefresh: &viewRefreshEvent{viewID: id, view: updated, err: err}}
-		}(view.id)
+			a.applyViewRefreshEvent(&viewRefreshEvent{
+				viewID: view.id, view: view, updated: updated, err: err,
+			})
+			continue
+		}
+		go func(source *viewPanel) {
+			updated, err := refresh()
+			a.servers <- serverEvent{viewRefresh: &viewRefreshEvent{
+				viewID: source.id, view: source, updated: updated, err: err,
+			}}
+		}(view)
 	}
 }
 
@@ -519,12 +572,15 @@ func (a *App) applyViewRefreshEvent(event *viewRefreshEvent) {
 	if current == nil {
 		return
 	}
+	if current != event.view {
+		return
+	}
 	current.refreshing = false
 	if event.err != nil {
 		a.message = event.err.Error()
 		return
 	}
-	replacement := newViewPanel(event.viewID, event.view)
+	replacement := newViewPanel(event.viewID, event.updated)
 	preserveViewState(current, replacement)
 	a.buffers[index].view = replacement
 	a.requestViewSelections(replacement)

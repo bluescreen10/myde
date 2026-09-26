@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bluescreen10/myde/plugin"
+	"github.com/bluescreen10/myde/ui"
 )
 
 const (
@@ -22,7 +23,7 @@ const (
 
 type gitPlugin struct {
 	host        plugin.Host
-	stageHandle plugin.ViewHandle
+	stageHandle ui.ViewHandle
 }
 
 type fileState struct {
@@ -77,41 +78,41 @@ func (g *gitPlugin) showStageView(selectedKind, selectedValue string) error {
 	return nil
 }
 
-func (g *gitPlugin) stageView(states []fileState, selectedKind, selectedValue string) plugin.View {
-	unstaged := make([]plugin.ListItem, 0)
-	staged := make([]plugin.ListItem, 0)
+func (g *gitPlugin) stageView(states []fileState, selectedKind, selectedValue string) ui.View {
+	unstaged := make([]ui.ListItem, 0)
+	staged := make([]ui.ListItem, 0)
 	for _, state := range states {
 		if state.unstaged {
 			status, tone := displayStatus(state, false)
-			unstaged = append(unstaged, plugin.ListItem{
+			unstaged = append(unstaged, ui.ListItem{
 				Label: state.path, Detail: status, DetailTone: tone, Value: state.path, Kind: unstagedKind,
 				Data: state.status,
 			})
 		}
 		if state.staged {
 			status, tone := displayStatus(state, true)
-			staged = append(staged, plugin.ListItem{
+			staged = append(staged, ui.ListItem{
 				Label: state.path, Detail: status, DetailTone: tone, Value: state.path, Kind: stagedKind,
 				Data: state.status,
 			})
 		}
 	}
-	return plugin.View{
+	return ui.View{
 		Title: "Git Stage",
-		Layout: plugin.Layout{
-			Direction: plugin.LayoutHorizontal,
-			Panes: []plugin.Pane{
+		Layout: ui.Layout{
+			Direction: ui.LayoutHorizontal,
+			Panes: []ui.Pane{
 				{
 					ID: "changes", Title: "Git Changes", Weight: 1,
-					List: &plugin.List{
-						Sections: []plugin.ListSection{
+					List: &ui.List{
+						Sections: []ui.ListSection{
 							{Title: "Unstaged", Items: unstaged},
 							{Title: "Staged", Items: staged},
 						},
 						SelectedValue: selectedValue,
 						SelectedKind:  selectedKind,
 						PreviewPane:   "diff",
-						Help: []plugin.KeyHelp{
+						Help: []ui.KeyHelp{
 							{Key: "+", Label: "stage"},
 							{Key: "-", Label: "unstage"},
 						},
@@ -119,23 +120,23 @@ func (g *gitPlugin) stageView(states []fileState, selectedKind, selectedValue st
 						OnSelect: g.previewDiff,
 					},
 				},
-				{ID: "diff", Title: "Diff", Weight: 2, Document: &plugin.ViewDocument{Syntax: "diff"}},
+				{ID: "diff", Title: "Diff", Weight: 2},
 			},
 		},
 		RefreshInterval: time.Second,
-		OnRefresh: func() (plugin.View, error) {
+		OnRefresh: func() (ui.View, error) {
 			updated, err := g.status()
 			if err != nil {
-				return plugin.View{}, err
+				return ui.View{}, err
 			}
 			return g.stageView(updated, "", ""), nil
 		},
 	}
 }
 
-func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.ListItem) error {
+func (g *gitPlugin) handleStageAction(action ui.Action, item ui.ListItem) error {
 	switch action {
-	case plugin.Add:
+	case ui.Add:
 		if item.Kind != unstagedKind {
 			return nil
 		}
@@ -151,7 +152,7 @@ func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.ListItem
 			return err
 		}
 		g.host.SetMessage("staged " + item.Value)
-	case plugin.Remove:
+	case ui.Remove:
 		if item.Kind != stagedKind {
 			return nil
 		}
@@ -167,7 +168,7 @@ func (g *gitPlugin) handleStageAction(action plugin.Action, item plugin.ListItem
 			return err
 		}
 		g.host.SetMessage("unstaged " + item.Value)
-	case plugin.Activate:
+	case ui.Activate:
 		return g.openDiff(item.Kind == stagedKind, item.Value, item.Data == "??")
 	}
 	return nil
@@ -182,7 +183,7 @@ func (g *gitPlugin) updateStageView(states []fileState, selectedKind, selectedVa
 	return nil
 }
 
-func displayStatus(state fileState, staged bool) (string, plugin.Tone) {
+func displayStatus(state fileState, staged bool) (string, ui.Tone) {
 	status := byte(' ')
 	if staged {
 		status = state.status[0]
@@ -194,13 +195,13 @@ func displayStatus(state fileState, staged bool) (string, plugin.Tone) {
 	}
 	switch status {
 	case 'A', '?':
-		return "A", plugin.ToneSuccess
+		return "A", ui.ToneSuccess
 	case 'D':
-		return "D", plugin.ToneDanger
+		return "D", ui.ToneDanger
 	case 'R':
-		return "R", plugin.ToneWarning
+		return "R", ui.ToneWarning
 	default:
-		return "M", plugin.ToneWarning
+		return "M", ui.ToneWarning
 	}
 }
 
@@ -269,19 +270,17 @@ func (g *gitPlugin) openDiff(staged bool, path string, untracked bool) error {
 	return nil
 }
 
-func (g *gitPlugin) previewDiff(item plugin.ListItem) (plugin.ViewDocument, error) {
+func (g *gitPlugin) previewDiff(item ui.ListItem) (ui.Widget, error) {
 	staged := item.Kind == stagedKind
 	output, err := g.diff(staged, item.Value, item.Data == "??")
 	if err != nil {
-		return plugin.ViewDocument{}, err
+		return nil, err
 	}
 	kind := "Unstaged"
 	if staged {
 		kind = "Staged"
 	}
-	return plugin.ViewDocument{
-		Title: kind + " · " + filepath.ToSlash(item.Value), Content: output, Syntax: "diff",
-	}, nil
+	return newDiffWidget(kind+" · "+filepath.ToSlash(item.Value), output), nil
 }
 
 func (g *gitPlugin) diff(staged bool, path string, untracked bool) ([]byte, error) {

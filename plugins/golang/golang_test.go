@@ -7,6 +7,7 @@ import (
 
 	"github.com/bluescreen10/myde/plugin"
 	golangplugin "github.com/bluescreen10/myde/plugins/golang"
+	"github.com/bluescreen10/myde/ui"
 )
 
 type testHost struct {
@@ -19,10 +20,10 @@ type testHost struct {
 func (h *testHost) Root() string                     { return "" }
 func (h *testHost) CurrentPath() string              { return h.document.Path }
 func (h *testHost) CurrentDocument() plugin.Document { return h.document }
-func (h *testHost) NewView(plugin.View) plugin.ViewHandle {
+func (h *testHost) NewView(ui.View) ui.ViewHandle {
 	return noopViewHandle{}
 }
-func (h *testHost) OpenSidebar(plugin.Sidebar)        {}
+func (h *testHost) OpenSidebar(ui.Sidebar)            {}
 func (h *testHost) CloseSidebar()                     {}
 func (h *testHost) OpenReadOnlyBuffer(string, []byte) {}
 func (h *testHost) Prompt(string, func(string) error) {}
@@ -43,9 +44,9 @@ func (h *testHost) RegisterMode(mode plugin.Mode) error {
 
 type noopViewHandle struct{}
 
-func (noopViewHandle) Show() bool              { return true }
-func (noopViewHandle) Update(plugin.View) bool { return true }
-func (noopViewHandle) Destroy()                {}
+func (noopViewHandle) Show() bool          { return true }
+func (noopViewHandle) Update(ui.View) bool { return true }
+func (noopViewHandle) Destroy()            {}
 
 func TestPluginRegistersGoModeAndCommands(t *testing.T) {
 	host := &testHost{commands: make(map[string]plugin.Command)}

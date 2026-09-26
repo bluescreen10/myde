@@ -604,6 +604,9 @@ func relativeToRoot(root, path string) string {
 
 func (a *App) closeFileBrowser() {
 	a.showFiles = false
+	if a.browser == nil {
+		return
+	}
 	a.browser.focused = false
 	a.browser.setQuery(nil)
 }

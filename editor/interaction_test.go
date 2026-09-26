@@ -12,6 +12,7 @@ import (
 	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/syntax"
 	"github.com/bluescreen10/myde/terminal"
+	"github.com/bluescreen10/myde/ui"
 )
 
 func TestDefaultPageBindingsAndCommands(t *testing.T) {
@@ -138,20 +139,20 @@ func TestMultipleCursorsUseSoftwareCursorPositions(t *testing.T) {
 
 func TestSidebarRefreshPreservesSelection(t *testing.T) {
 	refreshes := 0
-	panel := newSidebarPanel(plugin.Sidebar{
+	panel := newSidebarPanel(ui.Sidebar{
 		Title: "Changes",
-		Sections: []plugin.SidebarSection{{Title: "Files", Items: []plugin.SidebarItem{
+		Sections: []ui.SidebarSection{{Title: "Files", Items: []ui.SidebarItem{
 			{Label: "a", Value: "a", Kind: "unstaged"},
 			{Label: "b", Value: "b", Kind: "unstaged"},
 		}}},
 		SelectedValue:   "b",
 		SelectedKind:    "unstaged",
 		RefreshInterval: time.Millisecond,
-		OnRefresh: func() (plugin.Sidebar, error) {
+		OnRefresh: func() (ui.Sidebar, error) {
 			refreshes++
-			return plugin.Sidebar{
+			return ui.Sidebar{
 				Title: "Changes",
-				Sections: []plugin.SidebarSection{{Title: "Files", Items: []plugin.SidebarItem{
+				Sections: []ui.SidebarSection{{Title: "Files", Items: []ui.SidebarItem{
 					{Label: "b", Value: "b", Kind: "unstaged"},
 					{Label: "c", Value: "c", Kind: "unstaged"},
 				}}},
