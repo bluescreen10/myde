@@ -57,7 +57,33 @@ func (g *gitPlugin) Load(host plugin.Host) error {
 			return err
 		}
 	}
-	return nil
+	return host.RegisterStatus("git.branch", plugin.StatusItem{
+		RefreshInterval: 2 * time.Second,
+		OnRefresh:       g.branchStatus,
+	})
+}
+
+func (g *gitPlugin) branchStatus() (string, error) {
+	command := exec.Command("git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	command.Dir = g.host.Root()
+	output, err := command.Output()
+	if err == nil {
+		branch := strings.TrimSpace(string(output))
+		if branch != "" {
+			return "⎇ " + branch, nil
+		}
+	}
+	command = exec.Command("git", "rev-parse", "--short", "HEAD")
+	command.Dir = g.host.Root()
+	output, err = command.Output()
+	if err != nil {
+		return "", nil
+	}
+	revision := strings.TrimSpace(string(output))
+	if revision == "" {
+		return "", nil
+	}
+	return "⎇ " + revision, nil
 }
 
 func (g *gitPlugin) stageCommand(arguments string) error {

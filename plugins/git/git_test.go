@@ -23,6 +23,7 @@ type testHost struct {
 	buffer      []byte
 	message     string
 	modes       []plugin.Mode
+	statuses    map[string]plugin.StatusItem
 	view        ui.View
 	viewHandle  *testViewHandle
 	newViews    int
@@ -58,6 +59,14 @@ func (h *testHost) RegisterCommand(name string, command plugin.Command) error {
 
 func (h *testHost) RegisterMode(mode plugin.Mode) error {
 	h.modes = append(h.modes, mode)
+	return nil
+}
+
+func (h *testHost) RegisterStatus(name string, item plugin.StatusItem) error {
+	if h.statuses == nil {
+		h.statuses = make(map[string]plugin.StatusItem)
+	}
+	h.statuses[name] = item
 	return nil
 }
 
@@ -138,6 +147,18 @@ func TestPluginStagesDiffsUnstagesAndCommits(t *testing.T) {
 		if host.commands[name] == nil {
 			t.Fatalf("command %q was not registered", name)
 		}
+	}
+	branchItem, ok := host.statuses["git.branch"]
+	if !ok || branchItem.OnRefresh == nil || branchItem.RefreshInterval <= 0 {
+		t.Fatalf("git branch status item = %#v", branchItem)
+	}
+	branchStatus, err := branchItem.OnRefresh()
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimSpace(runGit(t, root, "branch", "--show-current"))
+	if branchStatus != "⎇ "+branch {
+		t.Fatalf("git branch status = %q, want %q", branchStatus, "⎇ "+branch)
 	}
 
 	if err := host.commands["git.stage"](""); err != nil {

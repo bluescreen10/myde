@@ -219,7 +219,8 @@ func (a *App) renderWorkspaceSearch(statusRow int) int {
 	panelStyle := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Panel}
 	border := terminal.Style{Foreground: a.theme.PanelBorder, Background: a.theme.Panel}
 	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
-	selected := terminal.Style{Foreground: a.theme.StatusText, Background: a.theme.Selection}
+	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
+	selected := terminal.Style{Foreground: a.theme.SelectionText, Background: a.theme.Selection}
 	title := "Search · " + filepath.Base(a.root)
 	if len(panel.results) > 0 {
 		title += fmt.Sprintf(" · %d", len(panel.results))
@@ -268,7 +269,7 @@ func (a *App) renderWorkspaceSearch(statusRow int) int {
 			lineStyle := style
 			lineStyle.Foreground = a.theme.Muted
 			if entry.resultIndex == panel.selected {
-				lineStyle.Foreground = a.theme.StatusText
+				lineStyle.Foreground = a.theme.SelectionText
 			}
 			a.screen.Text(2, y, lineNumber, lineStyle)
 			text := strings.TrimSpace(result.text)
@@ -279,9 +280,9 @@ func (a *App) renderWorkspaceSearch(statusRow int) int {
 
 	a.drawPanelSeparator(0, footerSeparator, sidebarWidth, border)
 	help := []styledText{
-		{text: "↑↓", style: accent}, {text: " move  ", style: border},
-		{text: "Enter", style: accent}, {text: " open  ", style: border},
-		{text: "Esc", style: accent}, {text: " close", style: border},
+		{text: "↑↓", style: accent}, {text: " move  ", style: helpText},
+		{text: "Enter", style: accent}, {text: " open  ", style: helpText},
+		{text: "Esc", style: accent}, {text: " close", style: helpText},
 	}
 	drawStyledText(a.screen, 2, footerSeparator+1, sidebarWidth-4, help)
 	return sidebarWidth

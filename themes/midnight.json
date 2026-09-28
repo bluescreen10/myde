@@ -25,6 +25,7 @@
     "type": "#67E8F9"
   },
   "borders": {
+    "status_separator": "",
     "separator": {
       "vertical": "║",
       "horizontal": "═"

@@ -91,7 +91,8 @@ func (a *App) renderViewPane(pane *viewPane, bounds viewPaneBounds, focused bool
 func (a *App) renderViewList(pane *viewPane, bounds viewPaneBounds, panelStyle, border terminal.Style) {
 	list := pane.list
 	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
-	selected := terminal.Style{Foreground: a.theme.StatusText, Background: a.theme.Selection, Bold: true}
+	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
+	selected := terminal.Style{Foreground: a.theme.SelectionText, Background: a.theme.Selection, Bold: true}
 	contentHeight := max(0, bounds.height-4)
 	list.ensureVisible(contentHeight)
 	for row := 0; row < contentHeight && list.top+row < len(list.rows); row++ {
@@ -135,13 +136,13 @@ func (a *App) renderViewList(pane *viewPane, bounds viewPaneBounds, panelStyle, 
 	footer := bounds.top + bounds.height - 3
 	a.drawPanelSeparator(bounds.left, footer, bounds.width, border)
 	help := []styledText{
-		{text: "Enter", style: accent}, {text: " preview  ", style: border},
-		{text: "Tab", style: accent}, {text: " pane  ", style: border},
+		{text: "Enter", style: accent}, {text: " preview  ", style: helpText},
+		{text: "Tab", style: accent}, {text: " pane  ", style: helpText},
 	}
 	for _, item := range list.help {
 		help = append(help,
 			styledText{text: item.Key, style: accent},
-			styledText{text: " " + item.Label + "  ", style: border},
+			styledText{text: " " + item.Label + "  ", style: helpText},
 		)
 	}
 	drawStyledText(a.screen, bounds.left+2, footer+1, bounds.width-4, help)
@@ -174,10 +175,11 @@ func (a *App) renderViewWidget(pane *viewPane, bounds viewPaneBounds, panelStyle
 	footer := bounds.top + bounds.height - 3
 	a.drawPanelSeparator(bounds.left, footer, bounds.width, border)
 	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
+	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
 	help := []styledText{
-		{text: "↑↓", style: accent}, {text: " scroll  ", style: border},
-		{text: "←→", style: accent}, {text: " pan  ", style: border},
-		{text: "Tab", style: accent}, {text: " pane", style: border},
+		{text: "↑↓", style: accent}, {text: " scroll  ", style: helpText},
+		{text: "←→", style: accent}, {text: " pan  ", style: helpText},
+		{text: "Tab", style: accent}, {text: " pane", style: helpText},
 	}
 	drawStyledText(a.screen, bounds.left+2, footer+1, bounds.width-4, help)
 }

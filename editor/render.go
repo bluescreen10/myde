@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bluescreen10/myde/buffer"
 	"github.com/bluescreen10/myde/syntax"
@@ -13,6 +14,7 @@ import (
 )
 
 func (a *App) render() error {
+	a.updateMessageLifetime(time.Now())
 	width, height := a.screen.Size()
 	base := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Background}
 	a.screen.Clear(base)
@@ -95,8 +97,12 @@ func (a *App) render() error {
 }
 
 func (a *App) renderTabs(width int) {
-	style := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Background}
-	active := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Selection, Bold: true}
+	style := terminal.Style{Foreground: a.theme.TabText, Background: a.theme.TabBackground}
+	active := terminal.Style{
+		Foreground: a.theme.TabActiveText,
+		Background: a.theme.TabActiveBackground,
+		Bold:       true,
+	}
 	x := 0
 	for index, editorBuffer := range a.buffers {
 		current := editorBuffer.text
@@ -140,7 +146,8 @@ func (a *App) renderPluginSidebar(statusRow int) int {
 	panelStyle := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Panel}
 	border := terminal.Style{Foreground: a.theme.PanelBorder, Background: a.theme.Panel}
 	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
-	selected := terminal.Style{Foreground: a.theme.StatusText, Background: a.theme.Selection, Bold: true}
+	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
+	selected := terminal.Style{Foreground: a.theme.SelectionText, Background: a.theme.Selection, Bold: true}
 	a.drawPanel(0, 1, sidebarWidth, panelHeight, a.sidebar.title, a.theme.Accent, panelStyle, border)
 	if panelHeight < 5 {
 		return sidebarWidth
@@ -192,10 +199,10 @@ func (a *App) renderPluginSidebar(statusRow int) int {
 	for _, item := range a.sidebar.help {
 		help = append(help,
 			styledText{text: item.Key, style: accent},
-			styledText{text: " " + item.Label + "  ", style: border},
+			styledText{text: " " + item.Label + "  ", style: helpText},
 		)
 	}
-	help = append(help, styledText{text: "Esc", style: accent}, styledText{text: " close", style: border})
+	help = append(help, styledText{text: "Esc", style: accent}, styledText{text: " close", style: helpText})
 	drawStyledText(a.screen, 2, footerSeparator+1, sidebarWidth-4, help)
 	return sidebarWidth
 }
@@ -213,6 +220,7 @@ func (a *App) renderFiles(statusRow int) int {
 	panel := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Panel}
 	border := terminal.Style{Foreground: a.theme.PanelBorder, Background: a.theme.Panel}
 	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
+	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
 	a.drawPanel(
 		0, 1, sidebarWidth, panelHeight,
 		"Files · "+filepath.Base(a.root), a.theme.Accent, panel, border,
@@ -248,7 +256,7 @@ func (a *App) renderFiles(statusRow int) int {
 		}
 		if a.browser.focused && index == a.browser.selected {
 			style = terminal.Style{
-				Foreground: a.theme.StatusText,
+				Foreground: a.theme.SelectionText,
 				Background: a.theme.Selection,
 				Bold:       true,
 			}
@@ -268,18 +276,18 @@ func (a *App) renderFiles(statusRow int) int {
 
 	footerSeparator := panelHeight - 3
 	a.drawPanelSeparator(0, footerSeparator, sidebarWidth, border)
-	help := []styledText{{text: "M-f", style: accent}, {text: " focus", style: border}}
+	help := []styledText{{text: "M-f", style: accent}, {text: " focus", style: helpText}}
 	if a.browser.focused {
 		navigation := []styledText{
-			{text: "↑↓", style: accent}, {text: " move  ", style: border},
-			{text: "←→", style: accent}, {text: " fold  ", style: border},
-			{text: "Enter", style: accent}, {text: " open", style: border},
+			{text: "↑↓", style: accent}, {text: " move  ", style: helpText},
+			{text: "←→", style: accent}, {text: " fold  ", style: helpText},
+			{text: "Enter", style: accent}, {text: " open", style: helpText},
 		}
 		drawStyledText(a.screen, 2, footerSeparator+1, sidebarWidth-4, navigation)
 		help = []styledText{
-			{text: "C-S-N", style: accent}, {text: " new  ", style: border},
-			{text: "C-r", style: accent}, {text: " rename  ", style: border},
-			{text: "Del", style: accent}, {text: " delete", style: border},
+			{text: "C-S-N", style: accent}, {text: " new  ", style: helpText},
+			{text: "C-r", style: accent}, {text: " rename  ", style: helpText},
+			{text: "Del", style: accent}, {text: " delete", style: helpText},
 		}
 	}
 	drawStyledText(a.screen, 2, footerSeparator+2, sidebarWidth-4, help)
@@ -391,9 +399,6 @@ func (a *App) renderStatus(width, row int) {
 	}
 	if view := a.currentView(); view != nil {
 		left := " " + a.message
-		if left == " " {
-			left = " Tab switch pane  C-x k close view  C-p files / > commands"
-		}
 		right := fmt.Sprintf("%s  %s  View ", view.title, a.theme.Name)
 		rightWidth := displayWidth(right)
 		a.screen.Text(0, row, truncate(left, max(0, width-rightWidth-1)), style)
@@ -407,16 +412,122 @@ func (a *App) renderStatus(width, row int) {
 	if item, ok := a.diagnosticAtCursor(); ok {
 		left = " Error: " + item.message
 	}
-	if left == " " {
-		left = " C-x C-s save  C-p files / > commands  C-q quit"
+	sections := a.editorStatusSections(point)
+	for len(sections) > 0 && statusSectionsWidth(sections, a.theme.Borders.StatusSeparator) >= width {
+		if !sections[0].optional {
+			break
+		}
+		sections = sections[1:]
+	}
+	rightWidth := statusSectionsWidth(sections, a.theme.Borders.StatusSeparator)
+	rightStart := max(0, width-rightWidth)
+	left = truncate(left, max(0, rightStart-1))
+	a.screen.Text(0, row, left, style)
+	a.drawStatusSections(width-rightWidth, row, sections, style)
+}
+
+type statusSection struct {
+	text     string
+	style    terminal.Style
+	optional bool
+}
+
+func (a *App) editorStatusSections(point buffer.Point) []statusSection {
+	sections := make([]statusSection, 0, len(a.statusItems)+4)
+	for index, item := range a.statusItems {
+		text := strings.TrimSpace(item.text)
+		if text == "" {
+			continue
+		}
+		sections = append(sections, statusSection{
+			text:     truncate(text, 32),
+			style:    a.statusStyle(a.theme.Accent, 14+(index%2)*8, false),
+			optional: true,
+		})
+	}
+	if text, errors := a.diagnosticStatus(); text != "" {
+		tone := a.theme.Warning
+		if errors > 0 {
+			tone = a.theme.Danger
+		}
+		sections = append(sections, statusSection{
+			text:     text,
+			style:    a.statusStyle(tone, 28, true),
+			optional: true,
+		})
 	}
 	mode := a.modeForBuffer(a.current())
-	right := fmt.Sprintf("%s  %s  Ln %d, Col %d  %d cursors ", mode.Name, a.theme.Name, point.Line+1, point.Column+1, len(a.current().Cursors()))
-	rightWidth := displayWidth(right)
-	left = truncate(left, max(0, width-rightWidth-1))
-	a.screen.Text(0, row, left, style)
-	if rightWidth < width {
-		a.screen.Text(width-rightWidth, row, right, style)
+	sections = append(sections,
+		statusSection{text: mode.Name, style: a.statusStyle(a.theme.Accent, 34, true)},
+		statusSection{
+			text:  fmt.Sprintf("%d:%d", point.Line+1, point.Column+1),
+			style: a.statusStyle(a.theme.Accent, 52, true),
+		},
+		statusSection{
+			text:  fmt.Sprintf("%d%%", scrollPercentage(point.Line, a.current().LineCount())),
+			style: a.statusStyle(a.theme.Accent, 76, true),
+		},
+	)
+	return sections
+}
+
+func (a *App) diagnosticStatus() (string, int) {
+	errors := 0
+	warnings := 0
+	for _, item := range a.currentEditorBuffer().diagnostics {
+		switch item.severity {
+		case 1:
+			errors++
+		case 2:
+			warnings++
+		}
+	}
+	parts := make([]string, 0, 2)
+	if errors > 0 {
+		parts = append(parts, fmt.Sprintf("%d✖", errors))
+	}
+	if warnings > 0 {
+		parts = append(parts, fmt.Sprintf("%d⚠", warnings))
+	}
+	return strings.Join(parts, " "), errors
+}
+
+func (a *App) statusStyle(tone terminal.Color, intensity int, bold bool) terminal.Style {
+	return terminal.Style{
+		Foreground: a.theme.Foreground,
+		Background: blendColor(a.theme.Status, tone, intensity),
+		Bold:       bold,
+	}
+}
+
+func scrollPercentage(line, lineCount int) int {
+	if lineCount <= 0 {
+		return 100
+	}
+	return min(100, max(0, (line+1)*100/lineCount))
+}
+
+func statusSectionsWidth(sections []statusSection, separator rune) int {
+	width := 0
+	for _, section := range sections {
+		width += terminal.RuneWidth(separator) + displayWidth(section.text) + 2
+	}
+	return width
+}
+
+func (a *App) drawStatusSections(x, row int, sections []statusSection, base terminal.Style) {
+	previousBackground := base.Background
+	for _, section := range sections {
+		separatorStyle := terminal.Style{
+			Foreground: section.style.Background,
+			Background: previousBackground,
+		}
+		a.screen.Set(x, row, a.theme.Borders.StatusSeparator, separatorStyle)
+		x += terminal.RuneWidth(a.theme.Borders.StatusSeparator)
+		text := " " + section.text + " "
+		a.screen.Text(x, row, text, section.style)
+		x += displayWidth(text)
+		previousBackground = section.style.Background
 	}
 }
 
@@ -426,7 +537,8 @@ func (a *App) renderPalette(width, statusRow int) {
 	panel := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Panel}
 	border := terminal.Style{Foreground: a.theme.PanelBorder, Background: a.theme.Panel}
 	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
-	selected := terminal.Style{Foreground: a.theme.StatusText, Background: a.theme.Selection, Bold: true}
+	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
+	selected := terminal.Style{Foreground: a.theme.SelectionText, Background: a.theme.Selection, Bold: true}
 	a.drawPanel(left, top, panelWidth, boxHeight, p.title, a.theme.Accent, panel, border)
 
 	count := fmt.Sprintf("%d / %d", min(p.selected+1, len(p.filtered)), len(p.filtered))
@@ -439,7 +551,7 @@ func (a *App) renderPalette(width, statusRow int) {
 	queryWidth := max(0, countX-inputX-1)
 	a.screen.Text(left+2, top+1, prefix, panel)
 	a.screen.Text(inputX, top+1, truncate(string(p.query), queryWidth), panel)
-	a.screen.Text(countX, top+1, count, border)
+	a.screen.Text(countX, top+1, count, helpText)
 	a.drawPanelSeparator(left, top+2, panelWidth, border)
 
 	rows := max(0, boxHeight-6)
@@ -464,17 +576,17 @@ func (a *App) renderPalette(width, statusRow int) {
 	footerSeparator := top + boxHeight - 3
 	a.drawPanelSeparator(left, footerSeparator, panelWidth, border)
 	help := []styledText{
-		{text: "↑↓", style: accent}, {text: " select   ", style: border},
-		{text: "Enter", style: accent}, {text: " choose   ", style: border},
-		{text: "Esc", style: accent}, {text: " cancel", style: border},
+		{text: "↑↓", style: accent}, {text: " select   ", style: helpText},
+		{text: "Enter", style: accent}, {text: " choose   ", style: helpText},
+		{text: "Esc", style: accent}, {text: " cancel", style: helpText},
 	}
 	if p.source != nil {
 		help = []styledText{
-			{text: "Files · ", style: border}, {text: ">", style: accent},
-			{text: " commands   ", style: border}, {text: "↑↓", style: accent},
-			{text: " select   ", style: border}, {text: "Enter", style: accent},
-			{text: " open/run   ", style: border}, {text: "Esc", style: accent},
-			{text: " cancel", style: border},
+			{text: "Files · ", style: helpText}, {text: ">", style: accent},
+			{text: " commands   ", style: helpText}, {text: "↑↓", style: accent},
+			{text: " select   ", style: helpText}, {text: "Enter", style: accent},
+			{text: " open/run   ", style: helpText}, {text: "Esc", style: accent},
+			{text: " cancel", style: helpText},
 		}
 	}
 	drawStyledText(a.screen, left+2, footerSeparator+1, panelWidth-4, help)
@@ -507,7 +619,8 @@ func (a *App) renderCompletion(width, statusRow, cursorX, cursorY int) {
 	panel := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Panel}
 	border := terminal.Style{Foreground: a.theme.PanelBorder, Background: a.theme.Panel}
 	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
-	selected := terminal.Style{Foreground: a.theme.StatusText, Background: a.theme.Selection, Bold: true}
+	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
+	selected := terminal.Style{Foreground: a.theme.SelectionText, Background: a.theme.Selection, Bold: true}
 	a.drawPanel(left, top, suggestionWidth, boxHeight, p.title, a.theme.Accent, panel, border)
 	start := visibleStart(p.selected, len(p.filtered), rows)
 	for row := 0; row < rows && start+row < len(p.filtered); row++ {
@@ -532,9 +645,9 @@ func (a *App) renderCompletion(width, statusRow, cursorX, cursorY int) {
 	a.drawPanelSeparator(left, separator, suggestionWidth, border)
 	position := fmt.Sprintf("%d/%d", p.selected+1, len(p.filtered))
 	help := []styledText{
-		{text: position + "  ", style: border}, {text: "↑↓", style: accent},
-		{text: " select  ", style: border}, {text: "↵/Tab", style: accent},
-		{text: " accept  ", style: border}, {text: "Esc", style: accent},
+		{text: position + "  ", style: helpText}, {text: "↑↓", style: accent},
+		{text: " select  ", style: helpText}, {text: "↵/Tab", style: accent},
+		{text: " accept  ", style: helpText}, {text: "Esc", style: accent},
 	}
 	drawStyledText(a.screen, left+2, separator+1, suggestionWidth-4, help)
 
@@ -580,6 +693,7 @@ func (a *App) renderDiagnostic(width, statusRow, cursorX, cursorY int, item diag
 	}
 	panel := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.DiagnosticBackground}
 	border := terminal.Style{Foreground: a.theme.Diagnostic, Background: a.theme.DiagnosticBackground}
+	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.DiagnosticBackground}
 	title := "Error"
 	if item.source != "" {
 		title += " · " + item.source
@@ -593,7 +707,7 @@ func (a *App) renderDiagnostic(width, statusRow, cursorX, cursorY int, item diag
 	}
 	separator := top + boxHeight - 3
 	a.drawPanelSeparator(left, separator, panelWidth, border)
-	a.screen.Text(left+2, separator+1, "Move the cursor away to dismiss", border)
+	a.screen.Text(left+2, separator+1, "Move the cursor away to dismiss", helpText)
 }
 
 func (a *App) renderMinibuffer(width, row int) {

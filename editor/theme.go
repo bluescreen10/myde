@@ -11,12 +11,13 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/bluescreen10/myde/settings"
 	"github.com/bluescreen10/myde/syntax"
 	"github.com/bluescreen10/myde/terminal"
 	themefiles "github.com/bluescreen10/myde/themes"
 )
 
-const defaultThemeID = "vs-dark-2026"
+const defaultThemeID = settings.DefaultTheme
 
 // BorderAxis contains the glyphs for horizontal and vertical strokes.
 type BorderAxis struct {
@@ -34,9 +35,10 @@ type BorderCorners struct {
 
 // BorderCharacters contains every glyph used to draw panels and separators.
 type BorderCharacters struct {
-	Separator BorderAxis
-	Corners   BorderCorners
-	Lines     BorderAxis
+	StatusSeparator rune
+	Separator       BorderAxis
+	Corners         BorderCorners
+	Lines           BorderAxis
 }
 
 // Theme defines editor colors and panel decoration.
@@ -48,6 +50,11 @@ type Theme struct {
 	Foreground           terminal.Color
 	Muted                terminal.Color
 	Selection            terminal.Color
+	SelectionText        terminal.Color
+	TabBackground        terminal.Color
+	TabText              terminal.Color
+	TabActiveBackground  terminal.Color
+	TabActiveText        terminal.Color
 	Cursor               terminal.Color
 	Status               terminal.Color
 	StatusText           terminal.Color
@@ -61,11 +68,19 @@ type Theme struct {
 	PanelBorder          terminal.Color
 	DiagnosticBackground terminal.Color
 
-	Comment terminal.Color
-	Keyword terminal.Color
-	String  terminal.Color
-	Number  terminal.Color
-	Type    terminal.Color
+	Comment     terminal.Color
+	Plain       terminal.Color
+	Keyword     terminal.Color
+	String      terminal.Color
+	Number      terminal.Color
+	Type        terminal.Color
+	Import      terminal.Color
+	Declaration terminal.Color
+	Function    terminal.Color
+	Delimiter   terminal.Color
+	Delimiter2  terminal.Color
+	Delimiter3  terminal.Color
+	Constant    terminal.Color
 
 	Borders BorderCharacters
 }
@@ -78,9 +93,10 @@ type themeDocument struct {
 }
 
 type borderDocument struct {
-	Separator axisDocument   `json:"separator"`
-	Corners   cornerDocument `json:"corners"`
-	Lines     axisDocument   `json:"lines"`
+	StatusSeparator string         `json:"status_separator"`
+	Separator       axisDocument   `json:"separator"`
+	Corners         cornerDocument `json:"corners"`
+	Lines           axisDocument   `json:"lines"`
 }
 
 type axisDocument struct {
@@ -201,6 +217,45 @@ func parseTheme(data []byte) (Theme, error) {
 			return Theme{}, fmt.Errorf("missing theme color %q", name)
 		}
 	}
+	if !seen["selectiontext"] {
+		theme.SelectionText = theme.StatusText
+	}
+	if !seen["tabbackground"] {
+		theme.TabBackground = theme.Background
+	}
+	if !seen["tabtext"] {
+		theme.TabText = theme.Muted
+	}
+	if !seen["tabactivebackground"] {
+		theme.TabActiveBackground = theme.Selection
+	}
+	if !seen["tabactivetext"] {
+		theme.TabActiveText = theme.Accent
+	}
+	if !seen["import"] {
+		theme.Import = theme.String
+	}
+	if !seen["declaration"] {
+		theme.Declaration = theme.Keyword
+	}
+	if !seen["function"] {
+		theme.Function = theme.Type
+	}
+	if !seen["delimiter"] {
+		theme.Delimiter = theme.Foreground
+	}
+	if !seen["plain"] {
+		theme.Plain = theme.Foreground
+	}
+	if !seen["delimiter2"] {
+		theme.Delimiter2 = theme.Delimiter
+	}
+	if !seen["delimiter3"] {
+		theme.Delimiter3 = theme.Delimiter
+	}
+	if !seen["constant"] {
+		theme.Constant = theme.Number
+	}
 	borders, err := resolveBorderCharacters(document.Borders)
 	if err != nil {
 		return Theme{}, err
@@ -222,11 +277,16 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 
 func resolveBorderCharacters(document borderDocument) (BorderCharacters, error) {
 	characters := BorderCharacters{}
+	statusSeparator := document.StatusSeparator
+	if statusSeparator == "" {
+		statusSeparator = ""
+	}
 	values := []struct {
 		name   string
 		value  string
 		target *rune
 	}{
+		{name: "status_separator", value: statusSeparator, target: &characters.StatusSeparator},
 		{name: "separator.horizontal", value: document.Separator.Horizontal, target: &characters.Separator.Horizontal},
 		{name: "separator.vertical", value: document.Separator.Vertical, target: &characters.Separator.Vertical},
 		{name: "corners.top_left", value: document.Corners.TopLeft, target: &characters.Corners.TopLeft},
@@ -246,7 +306,7 @@ func resolveBorderCharacters(document borderDocument) (BorderCharacters, error) 
 }
 
 func (t Theme) syntaxStyle(kind syntax.Kind) terminal.Style {
-	foreground := t.Foreground
+	foreground := t.Plain
 	switch kind {
 	case syntax.Comment:
 		foreground = t.Comment
@@ -258,6 +318,20 @@ func (t Theme) syntaxStyle(kind syntax.Kind) terminal.Style {
 		foreground = t.Number
 	case syntax.Type:
 		foreground = t.Type
+	case syntax.Import:
+		foreground = t.Import
+	case syntax.Declaration:
+		foreground = t.Declaration
+	case syntax.Function:
+		foreground = t.Function
+	case syntax.Delimiter:
+		foreground = t.Delimiter
+	case syntax.Delimiter2:
+		foreground = t.Delimiter2
+	case syntax.Delimiter3:
+		foreground = t.Delimiter3
+	case syntax.Constant:
+		foreground = t.Constant
 	case syntax.Added:
 		foreground = t.String
 	case syntax.Removed:
@@ -280,6 +354,16 @@ func (t *Theme) setColor(name, value string) error {
 		t.Muted = parsed
 	case "selection":
 		t.Selection = parsed
+	case "selectiontext":
+		t.SelectionText = parsed
+	case "tabbackground":
+		t.TabBackground = parsed
+	case "tabtext":
+		t.TabText = parsed
+	case "tabactivebackground":
+		t.TabActiveBackground = parsed
+	case "tabactivetext":
+		t.TabActiveText = parsed
 	case "cursor":
 		t.Cursor = parsed
 	case "status":
@@ -306,6 +390,8 @@ func (t *Theme) setColor(name, value string) error {
 		t.DiagnosticBackground = parsed
 	case "comment":
 		t.Comment = parsed
+	case "plain":
+		t.Plain = parsed
 	case "keyword":
 		t.Keyword = parsed
 	case "string":
@@ -314,6 +400,20 @@ func (t *Theme) setColor(name, value string) error {
 		t.Number = parsed
 	case "type":
 		t.Type = parsed
+	case "import":
+		t.Import = parsed
+	case "declaration":
+		t.Declaration = parsed
+	case "function":
+		t.Function = parsed
+	case "delimiter":
+		t.Delimiter = parsed
+	case "delimiter2":
+		t.Delimiter2 = parsed
+	case "delimiter3":
+		t.Delimiter3 = parsed
+	case "constant":
+		t.Constant = parsed
 	default:
 		return fmt.Errorf("unknown theme color %q", name)
 	}

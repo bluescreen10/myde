@@ -1,7 +1,11 @@
 // Package plugin defines the boundary between myde and editor plugins.
 package plugin
 
-import "github.com/bluescreen10/myde/ui"
+import (
+	"time"
+
+	"github.com/bluescreen10/myde/ui"
+)
 
 // Command handles a named editor command and its unparsed arguments.
 type Command func(arguments string) error
@@ -20,12 +24,22 @@ type Host interface {
 	ReplaceCurrentDocument(content []byte) error
 	RegisterCommand(name string, command Command) error
 	RegisterMode(mode Mode) error
+	RegisterStatus(name string, item StatusItem) error
 	NewView(view ui.View) ui.ViewHandle
 	OpenSidebar(sidebar ui.Sidebar)
 	CloseSidebar()
 	OpenReadOnlyBuffer(name string, content []byte)
 	Prompt(title string, submit func(string) error)
 	SetMessage(message string)
+}
+
+// StatusItem contributes a section to the editor status bar. Text provides an
+// optional initial value; OnRefresh is called in the background at the given
+// interval so slow providers never block input or rendering.
+type StatusItem struct {
+	Text            string
+	RefreshInterval time.Duration
+	OnRefresh       func() (string, error)
 }
 
 // Document is an immutable snapshot of the active buffer.

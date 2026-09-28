@@ -18,6 +18,7 @@ import (
 	"github.com/bluescreen10/myde/buffer"
 	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/protocol"
+	"github.com/bluescreen10/myde/settings"
 	"github.com/bluescreen10/myde/terminal"
 	"github.com/bluescreen10/myde/ui"
 )
@@ -46,6 +47,12 @@ type workspaceSearchEvent struct {
 	err        error
 }
 
+type statusRefreshEvent struct {
+	item *statusItem
+	text string
+	err  error
+}
+
 type serverEvent struct {
 	path               string
 	diagnostics        []diagnostic
@@ -64,6 +71,7 @@ type serverEvent struct {
 	workspaceSearch    *workspaceSearchEvent
 	viewPreview        *viewPreviewEvent
 	viewRefresh        *viewRefreshEvent
+	statusRefresh      *statusRefreshEvent
 }
 
 // App is an interactive editor session.
@@ -92,12 +100,17 @@ type App struct {
 	theme           Theme
 	themes          map[string]Theme
 	themeIDs        []string
+	settings        *settings.Store
 	extensions      *extensions
 	bindings        map[string]string
 	commands        map[string]plugin.Command
+	statusItems     []*statusItem
+	statusNames     map[string]bool
 	palette         *palette
 	minibuffer      *minibuffer
 	message         string
+	shownMessage    string
+	messageExpires  time.Time
 	prefix          bool
 	running         bool
 	cursorBlinkOn   bool
@@ -126,6 +139,31 @@ func New(
 	output io.Writer,
 	installed ...plugin.Plugin,
 ) (*App, error) {
+	return newApp(root, paths, session, input, output, nil, installed...)
+}
+
+// NewWithSettings creates an editor using user-wide settings from store.
+func NewWithSettings(
+	root string,
+	paths []string,
+	session *terminal.Session,
+	input io.Reader,
+	output io.Writer,
+	store *settings.Store,
+	installed ...plugin.Plugin,
+) (*App, error) {
+	return newApp(root, paths, session, input, output, store, installed...)
+}
+
+func newApp(
+	root string,
+	paths []string,
+	session *terminal.Session,
+	input io.Reader,
+	output io.Writer,
+	store *settings.Store,
+	installed ...plugin.Plugin,
+) (*App, error) {
 	absolute, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace: %w", err)
@@ -138,6 +176,14 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	themeID := defaultThemeID
+	if store != nil && store.Value("theme") != "" {
+		themeID = store.Value("theme")
+	}
+	configuredTheme, exists := loadedThemes[themeID]
+	if !exists {
+		return nil, fmt.Errorf("unknown theme %q in %s", themeID, store.SettingsFile)
+	}
 	app := &App{
 		root:           absolute,
 		session:        session,
@@ -146,11 +192,13 @@ func New(
 		modes:          make(map[string]plugin.Mode),
 		extensionModes: make(map[string]string),
 		historyLimit:   1000,
-		theme:          loadedThemes[defaultThemeID],
+		theme:          configuredTheme,
 		themes:         loadedThemes,
 		themeIDs:       themeIDs,
+		settings:       store,
 		extensions:     newExtensions(absolute),
 		bindings:       defaultBindings(),
+		statusNames:    make(map[string]bool),
 		servers:        make(chan serverEvent, 64),
 		cursorBlinkOn:  true,
 	}
@@ -270,6 +318,7 @@ func (a *App) open(path string) error {
 func (a *App) pollChanges() {
 	a.pollSidebarRefresh()
 	a.pollViewRefreshes()
+	a.pollStatusItems()
 	if a.showFiles {
 		a.syncFileBrowser()
 	}
@@ -302,6 +351,25 @@ func (a *App) pollChanges() {
 	if width, height, err := a.session.Size(); err == nil {
 		a.screen.Resize(width, height)
 	}
+}
+
+const messageDisplayDuration = 4 * time.Second
+
+func (a *App) updateMessageLifetime(now time.Time) {
+	if a.message != a.shownMessage {
+		a.shownMessage = a.message
+		if a.message == "" {
+			a.messageExpires = time.Time{}
+		} else {
+			a.messageExpires = now.Add(messageDisplayDuration)
+		}
+	}
+	if a.message == "" || a.messageExpires.IsZero() || now.Before(a.messageExpires) {
+		return
+	}
+	a.message = ""
+	a.shownMessage = ""
+	a.messageExpires = time.Time{}
 }
 
 func (a *App) pollSidebarRefresh() {
@@ -338,14 +406,18 @@ func (a *App) applyExtensions() {
 	for key, command := range a.extensions.bindings {
 		a.bindings[key] = command
 	}
-	themeID := a.extensions.settings["theme"]
-	if themeID == "" {
-		themeID = defaultThemeID
+	themeID := defaultThemeID
+	if a.settings != nil && a.settings.Value("theme") != "" {
+		themeID = a.settings.Value("theme")
+	}
+	fallbackTheme := a.themes[themeID]
+	if workspaceTheme := a.extensions.settings["theme"]; workspaceTheme != "" {
+		themeID = workspaceTheme
 	}
 	configuredTheme, exists := a.themes[themeID]
 	if !exists {
 		a.message = fmt.Sprintf("unknown theme %q", themeID)
-		configuredTheme = a.themes[defaultThemeID]
+		configuredTheme = fallbackTheme
 	}
 	a.theme = configuredTheme
 	for name, value := range a.extensions.colors {
@@ -370,6 +442,12 @@ func (a *App) applyExtensions() {
 }
 
 func (a *App) handleServerEvent(event serverEvent) {
+	if refresh := event.statusRefresh; refresh != nil {
+		refresh.item.refreshing = false
+		if refresh.err == nil {
+			refresh.item.text = strings.TrimSpace(refresh.text)
+		}
+	}
 	if search := event.workspaceSearch; search != nil {
 		a.applyWorkspaceSearchEvent(search)
 	}

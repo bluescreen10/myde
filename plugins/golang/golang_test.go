@@ -41,6 +41,7 @@ func (h *testHost) RegisterMode(mode plugin.Mode) error {
 	h.modes = append(h.modes, mode)
 	return nil
 }
+func (h *testHost) RegisterStatus(string, plugin.StatusItem) error { return nil }
 
 type noopViewHandle struct{}
 

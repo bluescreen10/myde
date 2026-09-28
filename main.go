@@ -11,6 +11,7 @@ import (
 	"github.com/bluescreen10/myde/editor"
 	gitplugin "github.com/bluescreen10/myde/plugins/git"
 	golangplugin "github.com/bluescreen10/myde/plugins/golang"
+	"github.com/bluescreen10/myde/settings"
 	"github.com/bluescreen10/myde/terminal"
 )
 
@@ -39,6 +40,10 @@ func run() (runErr error) {
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		return fmt.Errorf("standard input and output must be terminals")
 	}
+	userSettings, err := settings.Open()
+	if err != nil {
+		return err
+	}
 
 	session, err := terminal.Open(os.Stdin, os.Stdout)
 	if err != nil {
@@ -52,7 +57,9 @@ func run() (runErr error) {
 	stopSignals := restoreTerminalOnSignal(session)
 	defer stopSignals()
 
-	app, err := editor.New(root, paths, session, os.Stdin, os.Stdout, gitplugin.New(), golangplugin.New())
+	app, err := editor.NewWithSettings(
+		root, paths, session, os.Stdin, os.Stdout, userSettings, gitplugin.New(), golangplugin.New(),
+	)
 	if err != nil {
 		return err
 	}

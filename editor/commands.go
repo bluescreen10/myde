@@ -97,6 +97,11 @@ func (a *App) activateTheme(id string) error {
 	if !exists {
 		return fmt.Errorf("unknown theme %q", id)
 	}
+	if a.settings != nil {
+		if err := a.settings.Set("theme", id); err != nil {
+			return fmt.Errorf("save theme setting: %w", err)
+		}
+	}
 	a.theme = selected
 	a.message = "theme: " + selected.Name
 	return nil
