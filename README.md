@@ -5,10 +5,10 @@ inspired by Emacs: commands have names, keys invoke commands, and a saved
 extension file can define new functions, bindings, hooks, and theme colors
 without restarting the editor.
 
-This repository is an early but usable implementation. It deliberately has no
-runtime Go dependencies. Text is stored in a piece table, rendering updates only
-changed terminal rows, and syntax state is reparsed from the edited line rather
-than rebuilding an entire document.
+This repository is an early but usable implementation. Its only runtime Go
+dependency provides PTY support for persistent terminal shells. Text is stored
+in a piece table, rendering updates only changed terminal rows, and syntax state
+is reparsed from the edited line rather than rebuilding an entire document.
 
 ## Build and run
 
@@ -137,10 +137,13 @@ and recently chosen commands appear first. Important commands include:
 - `shell.run` — run a non-interactive command at the workspace root and inspect
   its output.
 - `shell.exec` — run a command without opening an output panel, useful in hooks.
-- `terminal.open` — open or switch to the `*terminal*` buffer. Enter runs the
-  current prompt with the shell from `$SHELL` (falling back to `/bin/sh`);
-  output and the next prompt remain in that buffer, `cd` updates its working
-  directory, and `exit` closes the terminal buffer.
+- `terminal.open` — open or switch to a persistent interactive shell from
+  `$SHELL` (falling back to `/bin/sh`) in the `*terminal*` buffer. The shell
+  owns its prompt, working directory, completion, and native history, so
+  Up/Down and `C-R` behave as they do in a regular terminal. `C-C` interrupts
+  the foreground command, output streams into the buffer as it arrives, and
+  `exit` closes the terminal buffer. Keys without an editor binding are sent
+  directly to the shell.
 - `editor.quit force` and `buffer.close force` — explicitly discard edits.
 
 Commands with arguments can be invoked from extensions. The palette lists the
@@ -195,6 +198,7 @@ literal characters used for panel separators, corners, and border lines:
 
 ```json
 "borders": {
+  "status_separator": "",
   "separator": { "vertical": "│", "horizontal": "─" },
   "corners": {
     "top_left": "╭", "top_right": "╮",
@@ -205,12 +209,50 @@ literal characters used for panel separators, corners, and border lines:
 ```
 
 Each value must be exactly one character; a space makes that part invisible.
+`status_separator` draws the chevron between status-bar sections and defaults
+to `` when omitted so existing themes remain compatible.
+Themes can also define `plain`, `import`, `declaration`, `function`, `constant`,
+and three delimiter colors (`delimiter`, `delimiter2`, and `delimiter3`) for
+richer source highlighting. Older themes fall back to their existing string,
+keyword, type, number, and foreground colors for those roles.
+Tab colors are independently configurable with `tab_background`, `tab_text`,
+`tab_active_background`, and `tab_active_text`. `selection_text` controls text
+on highlighted navigation rows; omitted tab and selection-text colors inherit
+the theme's existing background, muted, selection, accent, and status colors.
 The files are embedded in the binary so they remain available outside the
 source tree. VS Dark 2026, the editor's original theme, remains the default.
 The built-ins also include Paper, Midnight, Retro Green, and Retro Orange; the
 retro themes use monochrome phosphor palettes and ASCII terminal borders.
-Run `theme.select` from the command palette to switch themes for the current
-session, or use `set theme = <id>` in `.myde` to select one at startup.
+Run `theme.select` from the command palette to switch themes and save the
+selection as the user-wide default. A workspace can override it with
+`set theme = <id>` in `.myde`.
+
+## User settings
+
+On startup myde creates its directory beneath the platform's standard user
+configuration location (`os.UserConfigDir`):
+
+```text
+myde/
+  settings.conf
+  themes/
+  plugins/
+```
+
+This is normally `~/.config/myde` on Linux,
+`~/Library/Application Support/myde` on macOS, and `%AppData%\\myde` on
+Windows. Set `MYDE_CONFIG_DIR` to use a different directory. The override points
+directly at the directory containing `settings.conf`, rather than its parent.
+It is separate from `MYDE_CONFIG`, which points to a workspace extension file.
+`settings.conf` uses one `key = value` setting per line:
+
+```text
+theme = midnight
+```
+
+The `themes` and `plugins` directories reserve stable locations for
+user-installed JSON themes and compiled Go plugins. Myde does not load their
+contents yet.
 
 ## Plugins
 
@@ -223,6 +265,15 @@ rich-text lines and spans with semantic theme tones and optional display-column
 placement; they never emit terminal escape codes.
 Plugins can also inspect or replace the active document and open transient
 sidebars, text prompts, and read-only buffers without importing editor internals.
+`Host.OpenTextEditor` opens an ephemeral, fully editable buffer whose save
+callback can validate and consume multi-line content. A successful submission
+closes the buffer; an error leaves it open for correction.
+`Host.RegisterStatus` adds a right-aligned status-bar section. It accepts static
+text or a refresh callback and interval; callbacks run in the background. Empty
+text hides the section, which lets a provider disappear when it has nothing to
+report. The Git plugin uses this API to publish `⎇ branch`. Running `git.commit`
+without arguments opens `COMMIT_EDITMSG`; saving that buffer commits its full
+multi-line contents.
 The Git plugin in `plugins/git` owns Git subprocess and repository logic. The Go
 plugin in `plugins/golang` owns Go mode, `gopls`, Delve, and the `go.*` commands.
 

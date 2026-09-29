@@ -35,7 +35,14 @@ func (a *App) render() error {
 		a.renderView(activeView, statusRow)
 	} else {
 		sidebarWidth = a.renderSidebar(statusRow)
-		a.renderBuffer(sidebarWidth, width, statusRow)
+		if a.tileRoot != nil {
+			a.syncFocusedTile()
+			a.renderEditorTiles(editorRegion{
+				x: sidebarWidth, y: 1, width: width - sidebarWidth, height: statusRow - 1,
+			})
+		} else {
+			a.renderBuffer(sidebarWidth, width, statusRow)
+		}
 	}
 	a.renderStatus(width, statusRow)
 	if a.palette != nil {
@@ -305,24 +312,41 @@ func searchSidebarWidth(width int) int {
 }
 
 func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
-	current := a.current()
-	editorBuffer := a.currentEditorBuffer()
-	if editorBuffer.terminal != nil {
-		a.renderTerminalBuffer(sidebarWidth, width, statusRow)
+	a.renderBufferRegion(a.currentEditorBuffer(), editorRegion{
+		x: sidebarWidth, y: 1, width: width - sidebarWidth, height: statusRow - 1,
+	}, a.topLine, a.leftColumn)
+}
+
+type editorRegion struct {
+	x      int
+	y      int
+	width  int
+	height int
+}
+
+func (a *App) renderBufferRegion(editorBuffer *editorBuffer, region editorRegion, topLine, leftColumn int) {
+	if editorBuffer == nil || region.width <= 0 || region.height <= 0 {
 		return
 	}
-	bodyHeight := statusRow - 1
+	current := editorBuffer.text
+	if editorBuffer.terminal != nil {
+		a.renderTerminalBufferRegion(editorBuffer, region, topLine, leftColumn)
+		return
+	}
 	lineNumberWidth := len(strconv.Itoa(max(1, current.LineCount()))) + 2
-	textX := sidebarWidth + lineNumberWidth
-	available := max(0, width-textX)
+	lineNumberWidth = min(lineNumberWidth, region.width)
+	textX := region.x + lineNumberWidth
+	available := max(0, region.width-lineNumberWidth)
 	muted := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Background}
 	highlighter := editorBuffer.highlighter
 
-	for row := 0; row < bodyHeight; row++ {
-		lineNumber := a.topLine + row
-		y := row + 1
+	for row := 0; row < region.height; row++ {
+		lineNumber := topLine + row
+		y := region.y + row
 		if lineNumber >= current.LineCount() {
-			a.screen.Set(sidebarWidth+1, y, '~', muted)
+			if region.width > 1 {
+				a.screen.Set(region.x+1, y, '~', muted)
+			}
 			continue
 		}
 		gutter := fmt.Sprintf("%*d ", lineNumberWidth-1, lineNumber+1)
@@ -331,7 +355,7 @@ func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 			gutter = fmt.Sprintf("%*d●", lineNumberWidth-1, lineNumber+1)
 			gutterStyle.Foreground = a.theme.Error
 		}
-		a.screen.Text(sidebarWidth, y, gutter, gutterStyle)
+		a.screen.Text(region.x, y, truncate(gutter, lineNumberWidth), gutterStyle)
 		line := string(current.Line(lineNumber))
 		runes := []rune(line)
 		spans := highlighter.Highlight(lineNumber, line)
@@ -351,7 +375,7 @@ func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 			if len(errorRanges) > 0 {
 				style.Background = a.theme.DiagnosticBackground
 			}
-			if a.isSelected(lineNumber, column) {
+			if a.isBufferSelected(current, lineNumber, column) {
 				style.Background = a.theme.Selection
 			}
 			if columnInRanges(column, errorRanges) {
@@ -363,10 +387,10 @@ func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 			if value == '\t' {
 				cellWidth = 4 - displayColumn%4
 			}
-			if displayColumn+cellWidth > a.leftColumn && displayColumn-a.leftColumn < available {
-				x := textX + max(0, displayColumn-a.leftColumn)
-				if value == '\t' || displayColumn < a.leftColumn {
-					for offset := max(a.leftColumn-displayColumn, 0); offset < cellWidth && x < textX+available; offset++ {
+			if displayColumn+cellWidth > leftColumn && displayColumn-leftColumn < available {
+				x := textX + max(0, displayColumn-leftColumn)
+				if value == '\t' || displayColumn < leftColumn {
+					for offset := max(leftColumn-displayColumn, 0); offset < cellWidth && x < textX+available; offset++ {
 						a.screen.Set(x, y, ' ', style)
 						x++
 					}
@@ -380,7 +404,7 @@ func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 			if currentRange.start < len(runes) || currentRange.end <= len(runes) {
 				continue
 			}
-			x := textX + sourceDisplayWidth(runes) - a.leftColumn
+			x := textX + sourceDisplayWidth(runes) - leftColumn
 			if x < textX || x >= textX+available {
 				continue
 			}
@@ -396,13 +420,14 @@ func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 	}
 }
 
-func (a *App) renderTerminalBuffer(sidebarWidth, width, statusRow int) {
-	current := a.current()
-	bodyHeight := statusRow - 1
-	available := max(0, width-sidebarWidth)
+func (a *App) renderTerminalBufferRegion(editorBuffer *editorBuffer, region editorRegion, topLine, leftColumn int) {
+	if editorBuffer == nil || region.width <= 0 || region.height <= 0 {
+		return
+	}
+	current := editorBuffer.text
 	style := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Background}
-	for row := 0; row < bodyHeight; row++ {
-		lineNumber := a.topLine + row
+	for row := 0; row < region.height; row++ {
+		lineNumber := topLine + row
 		if lineNumber >= current.LineCount() {
 			continue
 		}
@@ -410,10 +435,10 @@ func (a *App) renderTerminalBuffer(sidebarWidth, width, statusRow int) {
 		displayColumn := 0
 		for _, value := range line {
 			cellWidth := terminal.RuneWidth(value)
-			if displayColumn+cellWidth > a.leftColumn && displayColumn-a.leftColumn < available {
-				x := sidebarWidth + max(0, displayColumn-a.leftColumn)
-				if displayColumn >= a.leftColumn && x+cellWidth <= width {
-					a.screen.Set(x, row+1, value, style)
+			if displayColumn+cellWidth > leftColumn && displayColumn-leftColumn < region.width {
+				x := region.x + max(0, displayColumn-leftColumn)
+				if displayColumn >= leftColumn && x+cellWidth <= region.x+region.width {
+					a.screen.Set(x, region.y+row, value, style)
 				}
 			}
 			displayColumn += cellWidth
@@ -880,21 +905,43 @@ func wrapText(value string, width int) []string {
 }
 
 func (a *App) cursorPosition(sidebarWidth, statusRow int) (int, int) {
-	x, y := a.bufferPointPosition(a.current().Cursors()[0].Point, sidebarWidth)
+	region := editorRegion{x: sidebarWidth, y: 1}
 	width, _ := a.screen.Size()
+	region.width = width - sidebarWidth
+	region.height = statusRow - 1
+	if a.tileRoot != nil {
+		if focused, ok := a.editorTileRegion(a.focusedTile, region); ok {
+			region = focused
+		}
+	}
+	x, y := a.bufferPointPositionInRegion(
+		a.currentEditorBuffer(), a.current().Cursors()[0].Point, region, a.topLine, a.leftColumn,
+	)
 	return max(0, min(width-1, x)), max(0, min(statusRow-1, y))
 }
 
 func (a *App) bufferPointPosition(point buffer.Point, sidebarWidth int) (int, int) {
-	current := a.current()
+	return a.bufferPointPositionInRegion(
+		a.currentEditorBuffer(), point,
+		editorRegion{x: sidebarWidth, y: 1}, a.topLine, a.leftColumn,
+	)
+}
+
+func (a *App) bufferPointPositionInRegion(
+	editorBuffer *editorBuffer,
+	point buffer.Point,
+	region editorRegion,
+	topLine, leftColumn int,
+) (int, int) {
+	current := editorBuffer.text
 	lineNumberWidth := len(strconv.Itoa(max(1, current.LineCount()))) + 2
-	if a.currentEditorBuffer().terminal != nil {
+	if editorBuffer.terminal != nil {
 		lineNumberWidth = 0
 	}
 	line := []rune(string(current.Line(point.Line)))
 	column := min(point.Column, len(line))
-	x := sidebarWidth + lineNumberWidth + sourceDisplayWidth(line[:column]) - a.leftColumn
-	y := point.Line - a.topLine + 1
+	x := region.x + lineNumberWidth + sourceDisplayWidth(line[:column]) - leftColumn
+	y := region.y + point.Line - topLine
 	return x, y
 }
 
@@ -910,23 +957,32 @@ func (a *App) usesSoftwareCursors() bool {
 
 func (a *App) renderSoftwareCursors(sidebarWidth, statusRow int) {
 	width, _ := a.screen.Size()
+	region := editorRegion{
+		x: sidebarWidth, y: 1, width: width - sidebarWidth, height: statusRow - 1,
+	}
+	if a.tileRoot != nil {
+		if focused, ok := a.editorTileRegion(a.focusedTile, region); ok {
+			region = focused
+		}
+	}
 	lineNumberWidth := len(strconv.Itoa(max(1, a.current().LineCount()))) + 2
-	textX := sidebarWidth + lineNumberWidth
+	textX := region.x + lineNumberWidth
 	style := terminal.Style{
 		Foreground: a.theme.Background,
 		Background: a.theme.Cursor,
 	}
 	for _, cursor := range a.current().Cursors() {
-		x, y := a.bufferPointPosition(cursor.Point, sidebarWidth)
-		if x < textX || x >= width || y < 1 || y >= statusRow {
+		x, y := a.bufferPointPositionInRegion(
+			a.currentEditorBuffer(), cursor.Point, region, a.topLine, a.leftColumn,
+		)
+		if x < textX || x >= region.x+region.width || y < region.y || y >= region.y+region.height {
 			continue
 		}
 		a.screen.Restyle(x, y, style)
 	}
 }
 
-func (a *App) isSelected(line, column int) bool {
-	current := a.current()
+func (a *App) isBufferSelected(current *buffer.Buffer, line, column int) bool {
 	position := current.Offset(buffer.Point{Line: line, Column: column})
 	for _, cursor := range current.Cursors() {
 		start := current.Offset(cursor.Anchor)

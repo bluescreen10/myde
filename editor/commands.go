@@ -58,6 +58,11 @@ func (a *App) registerCommands() {
 		"terminal.open":           a.openTerminal,
 		"theme.select":            a.selectTheme,
 		"view.files":              a.toggleFiles,
+		"view.next":               a.nextView,
+		"view.previous":           a.previousView,
+		"view.split-horizontally": a.splitHorizontally,
+		"view.split-vertically":   a.splitVertically,
+		"view.close":              a.closeView,
 	}
 }
 
@@ -478,6 +483,11 @@ func (a *App) removeBuffer(removed *buffer.Buffer) bool {
 	if index < 0 {
 		return false
 	}
+	removedEditorBuffer := a.buffers[index]
+	hadTiles := a.tileRoot != nil
+	if hadTiles {
+		a.syncFocusedTile()
+	}
 	a.notifyLSPDidClose(removed)
 	if terminalBuffer := a.editorBufferFor(removed).terminal; terminalBuffer != nil && terminalBuffer.cancel != nil {
 		terminalBuffer.cancel()
@@ -487,24 +497,31 @@ func (a *App) removeBuffer(removed *buffer.Buffer) bool {
 		a.active--
 	}
 	if len(a.buffers) == 0 {
-		a.addBuffer(buffer.New())
+		blank := buffer.New()
+		blank.SetHistoryLimit(a.historyLimit)
+		a.buffers = append(a.buffers, a.newEditorBuffer(blank))
+		a.active = 0
+	} else {
+		a.active = min(a.active, len(a.buffers)-1)
 	}
-	a.active = min(a.active, len(a.buffers)-1)
-	a.topLine = 0
-	a.leftColumn = 0
+	preservedViewport := a.removeBufferFromTiles(removedEditorBuffer)
+	if !hadTiles || !preservedViewport {
+		a.topLine = 0
+		a.leftColumn = 0
+	}
 	a.activateCurrentMode()
 	return true
 }
 
 func (a *App) nextBuffer(arguments string) error {
-	a.active = (a.active + 1) % len(a.buffers)
+	a.activateBufferIndex((a.active+1)%len(a.buffers), false)
 	a.activateCurrentMode()
 	a.ensureCursorVisible()
 	return nil
 }
 
 func (a *App) previousBuffer(arguments string) error {
-	a.active = (a.active + len(a.buffers) - 1) % len(a.buffers)
+	a.activateBufferIndex((a.active+len(a.buffers)-1)%len(a.buffers), false)
 	a.activateCurrentMode()
 	a.ensureCursorVisible()
 	return nil
@@ -518,7 +535,7 @@ func (a *App) selectBuffer(arguments string) error {
 	if number > len(a.buffers) {
 		return fmt.Errorf("buffer %d is not open", number)
 	}
-	a.active = number - 1
+	a.activateBufferIndex(number-1, false)
 	a.activateCurrentMode()
 	a.ensureCursorVisible()
 	return nil
@@ -578,7 +595,7 @@ func (a *App) switchBuffer(arguments string) error {
 	a.choose("Switch buffer", items, func(item paletteItem) {
 		for index := range a.buffers {
 			if item.value == fmt.Sprint(index) {
-				a.active = index
+				a.activateBufferIndex(index, false)
 				a.activateCurrentMode()
 				return
 			}

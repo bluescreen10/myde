@@ -31,7 +31,7 @@ type shellBuffer struct {
 func (a *App) openTerminal(arguments string) error {
 	for index, current := range a.buffers {
 		if current.terminal != nil {
-			a.active = index
+			a.activateBufferIndex(index, false)
 			a.ensureCursorVisible()
 			return nil
 		}
@@ -114,15 +114,47 @@ func terminalEnvironment(environment []string) []string {
 }
 
 func (a *App) terminalSize() (int, int) {
+	return a.terminalSizeForShell(a.currentEditorBuffer().terminal)
+}
+
+func (a *App) terminalSizeForShell(shell *shellBuffer) (int, int) {
 	width, height := a.screen.Size()
-	return max(20, width), max(2, height-2)
+	sidebarWidth := 0
+	if a.workspaceSearch != nil {
+		sidebarWidth = searchSidebarWidth(width)
+	} else if a.showFiles || a.sidebar != nil {
+		sidebarWidth = fileSidebarWidth(width)
+	}
+	region := editorRegion{
+		x: sidebarWidth, y: 1, width: width - sidebarWidth, height: height - 2,
+	}
+	if a.tileRoot != nil && shell != nil {
+		target := a.focusedTile
+		if target == nil || target.buffer == nil || target.buffer.terminal != shell {
+			target = nil
+			leaves := make([]*editorTile, 0, 4)
+			a.tileRoot.leaves(&leaves)
+			for _, tile := range leaves {
+				if tile.buffer != nil && tile.buffer.terminal == shell {
+					target = tile
+					break
+				}
+			}
+		}
+		if target != nil {
+			if tiled, ok := a.editorTileRegion(target, region); ok {
+				region = tiled
+			}
+		}
+	}
+	return max(2, region.width), max(2, region.height)
 }
 
 func (a *App) resizeTerminalShell(shell *shellBuffer) {
 	if shell == nil || shell.pty == nil || !shell.running {
 		return
 	}
-	width, height := a.terminalSize()
+	width, height := a.terminalSizeForShell(shell)
 	if width == shell.width && height == shell.height {
 		return
 	}

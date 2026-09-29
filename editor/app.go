@@ -88,6 +88,8 @@ type App struct {
 	active          int
 	topLine         int
 	leftColumn      int
+	tileRoot        *editorTile
+	focusedTile     *editorTile
 	historyLimit    int
 	files           []string
 	directories     []string
@@ -284,7 +286,7 @@ func (a *App) current() *buffer.Buffer {
 func (a *App) addBuffer(current *buffer.Buffer) {
 	current.SetHistoryLimit(a.historyLimit)
 	a.buffers = append(a.buffers, a.newEditorBuffer(current))
-	a.active = len(a.buffers) - 1
+	a.activateBufferIndex(len(a.buffers)-1, true)
 }
 
 func (a *App) open(path string) error {
@@ -298,7 +300,7 @@ func (a *App) open(path string) error {
 	for index, editorBuffer := range a.buffers {
 		current := editorBuffer.text
 		if current.Path() == absolute {
-			a.active = index
+			a.activateBufferIndex(index, false)
 			a.recordRecentFile(absolute)
 			a.CloseSidebar()
 			a.activateCurrentMode()
@@ -312,8 +314,6 @@ func (a *App) open(path string) error {
 	a.addBuffer(opened)
 	a.recordRecentFile(absolute)
 	a.CloseSidebar()
-	a.topLine = 0
-	a.leftColumn = 0
 	a.runHooks("open")
 	a.notifyLSPDidOpen(opened)
 	a.activateCurrentMode()
@@ -1033,7 +1033,21 @@ func (a *App) ensureCursorVisible() {
 	if a.minibuffer != nil {
 		statusRow--
 	}
-	bodyHeight := max(1, statusRow-1)
+	sidebarWidth := 0
+	if a.workspaceSearch != nil {
+		sidebarWidth = searchSidebarWidth(width)
+	} else if a.showFiles || a.sidebar != nil {
+		sidebarWidth = fileSidebarWidth(width)
+	}
+	region := editorRegion{
+		x: sidebarWidth, y: 1, width: width - sidebarWidth, height: statusRow - 1,
+	}
+	if a.tileRoot != nil {
+		if focused, ok := a.editorTileRegion(a.focusedTile, region); ok {
+			region = focused
+		}
+	}
+	bodyHeight := max(1, region.height)
 	point := a.current().Cursors()[0].Point
 	if point.Line < a.topLine {
 		a.topLine = point.Line
@@ -1041,17 +1055,11 @@ func (a *App) ensureCursorVisible() {
 	if point.Line >= a.topLine+bodyHeight {
 		a.topLine = point.Line - bodyHeight + 1
 	}
-	sidebarWidth := 0
-	if a.workspaceSearch != nil {
-		sidebarWidth = searchSidebarWidth(width)
-	} else if a.showFiles || a.sidebar != nil {
-		sidebarWidth = fileSidebarWidth(width)
-	}
 	lineNumberWidth := len(strconv.Itoa(max(1, a.current().LineCount()))) + 2
 	if a.currentEditorBuffer().terminal != nil {
 		lineNumberWidth = 0
 	}
-	available := max(1, width-sidebarWidth-lineNumberWidth)
+	available := max(1, region.width-lineNumberWidth)
 	line := []rune(string(a.current().Line(point.Line)))
 	column := min(point.Column, len(line))
 	displayColumn := sourceDisplayWidth(line[:column])

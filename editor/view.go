@@ -244,9 +244,7 @@ func (a *App) NewView(view ui.View) ui.ViewHandle {
 	editorBuffer := a.newEditorBuffer(placeholder)
 	editorBuffer.view = newViewPanel(id, view)
 	a.buffers = append(a.buffers, editorBuffer)
-	a.active = len(a.buffers) - 1
-	a.topLine = 0
-	a.leftColumn = 0
+	a.activateBufferIndex(len(a.buffers)-1, true)
 	a.CloseSidebar()
 	a.closeFileBrowser()
 	a.closeWorkspaceSearch()
@@ -259,7 +257,7 @@ func (h *viewHandle) Show() bool {
 	if index < 0 {
 		return false
 	}
-	h.app.active = index
+	h.app.activateBufferIndex(index, false)
 	h.app.CloseSidebar()
 	h.app.closeFileBrowser()
 	h.app.closeWorkspaceSearch()

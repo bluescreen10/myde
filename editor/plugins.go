@@ -104,10 +104,10 @@ func (a *App) OpenReadOnlyBuffer(name string, content []byte) {
 		if !current.IsReadOnly() || current.Name() != name {
 			continue
 		}
+		previous := a.buffers[index]
 		a.buffers[index] = a.newEditorBuffer(view)
-		a.active = index
-		a.topLine = 0
-		a.leftColumn = 0
+		a.replaceEditorBufferInTiles(previous, a.buffers[index])
+		a.activateBufferIndex(index, true)
 		return
 	}
 	a.addBuffer(view)
@@ -128,9 +128,7 @@ func (a *App) OpenTextEditor(name string, content []byte, submit func([]byte) er
 		if editorBuffer.onSave == nil || editorBuffer.text.Name() != name {
 			continue
 		}
-		a.active = index
-		a.topLine = 0
-		a.leftColumn = 0
+		a.activateBufferIndex(index, true)
 		return
 	}
 	view := buffer.NewNamed(name)
