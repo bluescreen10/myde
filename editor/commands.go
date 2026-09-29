@@ -242,6 +242,9 @@ func paletteItemsByRecent(values, recent []string, kind string) []paletteItem {
 
 func (a *App) save(arguments string) error {
 	current := a.current()
+	if a.currentEditorBuffer().onSave != nil {
+		return a.submitTextEditor(current)
+	}
 	if current.IsReadOnly() {
 		return fmt.Errorf("%s is read-only", current.Name())
 	}
@@ -323,6 +326,14 @@ func (a *App) saveDirtyBuffersAndQuit(dirty []*buffer.Buffer, index int) {
 		a.saveDirtyBuffersAndQuit(dirty, index+1)
 		return
 	}
+	if editorBuffer := a.editorBufferFor(current); editorBuffer != nil && editorBuffer.onSave != nil {
+		if err := a.submitTextEditor(current); err != nil {
+			a.message = err.Error()
+			return
+		}
+		a.saveDirtyBuffersAndQuit(dirty, index+1)
+		return
+	}
 	if current.Path() == "" {
 		a.promptMinibuffer("Save "+current.Name()+" as", func(path string) {
 			if !filepath.IsAbs(path) {
@@ -401,6 +412,12 @@ func (a *App) confirmBufferClose(current *buffer.Buffer) {
 }
 
 func (a *App) saveAndCloseBuffer(current *buffer.Buffer) {
+	if editorBuffer := a.editorBufferFor(current); editorBuffer != nil && editorBuffer.onSave != nil {
+		if err := a.submitTextEditor(current); err != nil {
+			a.message = err.Error()
+		}
+		return
+	}
 	if current.Path() == "" {
 		a.promptMinibuffer("Save as", func(path string) {
 			if !filepath.IsAbs(path) {
@@ -432,6 +449,25 @@ func (a *App) saveBufferBeforeClose(current *buffer.Buffer, path string) error {
 }
 
 func (a *App) closeBufferNow(removed *buffer.Buffer) {
+	if !a.removeBuffer(removed) {
+		return
+	}
+	a.message = "closed " + removed.Name()
+}
+
+func (a *App) submitTextEditor(current *buffer.Buffer) error {
+	editorBuffer := a.editorBufferFor(current)
+	if editorBuffer == nil || editorBuffer.onSave == nil {
+		return fmt.Errorf("%s is not a plugin text editor", current.Name())
+	}
+	if err := editorBuffer.onSave(current.Bytes()); err != nil {
+		return err
+	}
+	a.removeBuffer(current)
+	return nil
+}
+
+func (a *App) removeBuffer(removed *buffer.Buffer) bool {
 	index := -1
 	for currentIndex, current := range a.buffers {
 		if current.text == removed {
@@ -440,7 +476,7 @@ func (a *App) closeBufferNow(removed *buffer.Buffer) {
 		}
 	}
 	if index < 0 {
-		return
+		return false
 	}
 	a.notifyLSPDidClose(removed)
 	if terminalBuffer := a.editorBufferFor(removed).terminal; terminalBuffer != nil && terminalBuffer.cancel != nil {
@@ -456,8 +492,8 @@ func (a *App) closeBufferNow(removed *buffer.Buffer) {
 	a.active = min(a.active, len(a.buffers)-1)
 	a.topLine = 0
 	a.leftColumn = 0
-	a.message = "closed " + removed.Name()
 	a.activateCurrentMode()
+	return true
 }
 
 func (a *App) nextBuffer(arguments string) error {
@@ -521,6 +557,7 @@ func (a *App) redo(arguments string) error {
 }
 
 func (a *App) finishHistoryChange(current *buffer.Buffer, operation string) {
+	a.showDiagnostic = false
 	cursors := current.Cursors()
 	for index, cursor := range cursors {
 		point := current.Point(current.Offset(cursor.Point))

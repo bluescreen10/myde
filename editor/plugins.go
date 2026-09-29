@@ -44,6 +44,7 @@ func (a *App) ReplaceCurrentDocument(content []byte) error {
 	if bytes.Equal(before, content) {
 		return nil
 	}
+	a.showDiagnostic = false
 	offsets := make([]int, len(current.Cursors()))
 	for index, cursor := range current.Cursors() {
 		offsets[index] = current.Offset(cursor.Point)
@@ -110,6 +111,34 @@ func (a *App) OpenReadOnlyBuffer(name string, content []byte) {
 		return
 	}
 	a.addBuffer(view)
+	a.topLine = 0
+	a.leftColumn = 0
+}
+
+// OpenTextEditor opens or focuses an editable, memory-backed buffer. Saving
+// submits its content and closes the buffer when the callback succeeds.
+func (a *App) OpenTextEditor(name string, content []byte, submit func([]byte) error) {
+	name = strings.TrimSpace(name)
+	if name == "" || submit == nil {
+		return
+	}
+	a.CloseSidebar()
+	a.closeWorkspaceSearch()
+	for index, editorBuffer := range a.buffers {
+		if editorBuffer.onSave == nil || editorBuffer.text.Name() != name {
+			continue
+		}
+		a.active = index
+		a.topLine = 0
+		a.leftColumn = 0
+		return
+	}
+	view := buffer.NewNamed(name)
+	if len(content) > 0 {
+		view.Insert(0, content)
+	}
+	a.addBuffer(view)
+	a.currentEditorBuffer().onSave = submit
 	a.topLine = 0
 	a.leftColumn = 0
 }

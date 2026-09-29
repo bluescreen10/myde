@@ -261,6 +261,7 @@ func (a *App) requestLSPCompletion() {
 	if !a.hasLanguageServerForCurrentMode() || a.current().Path() == "" {
 		return
 	}
+	a.completionEpoch++
 	server := a.lsp
 	current := a.current()
 	revision := current.Revision()
@@ -276,11 +277,19 @@ func (a *App) requestLSPCompletion() {
 			"position":     map[string]any{"line": position.line, "character": position.character},
 		}, &result)
 		if err != nil {
-			a.servers <- serverEvent{message: "completion: " + err.Error()}
+			a.servers <- serverEvent{
+				message:            "completion: " + err.Error(),
+				completionReady:    true,
+				completionBuffer:   current,
+				completionRevision: revision,
+				completionPoint:    point,
+				completionEpoch:    epoch,
+			}
 			return
 		}
 		a.servers <- serverEvent{
 			completions:        parseCompletions(result, current, point),
+			completionReady:    true,
 			completionBuffer:   current,
 			completionRevision: revision,
 			completionPoint:    point,
@@ -290,7 +299,8 @@ func (a *App) requestLSPCompletion() {
 }
 
 func (a *App) resolveSelectedCompletion() {
-	if !a.lspCompletionResolve || a.palette == nil || !a.palette.completion || len(a.palette.filtered) == 0 {
+	if !a.lspCompletionResolve || a.palette == nil || !a.palette.completion ||
+		a.palette.completionPending || len(a.palette.filtered) == 0 {
 		return
 	}
 	item := a.palette.filtered[a.palette.selected]
@@ -581,6 +591,7 @@ func (a *App) applyLSPCompletion(current *buffer.Buffer, completion lspCompletio
 	if current != a.current() || len(completion.edits) == 0 {
 		return
 	}
+	a.showDiagnostic = false
 	edits := make([]completionOffsetEdit, 0, len(completion.edits))
 	changedLine := current.LineCount()
 	for index, source := range completion.edits {

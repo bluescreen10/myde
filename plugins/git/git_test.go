@@ -19,6 +19,9 @@ type testHost struct {
 	commands    map[string]plugin.Command
 	sidebar     ui.Sidebar
 	prompt      func(string) error
+	editorName  string
+	editorText  []byte
+	editorSave  func([]byte) error
 	bufferName  string
 	buffer      []byte
 	message     string
@@ -108,6 +111,12 @@ func (h *testViewHandle) Destroy() {
 func (h *testHost) OpenReadOnlyBuffer(name string, content []byte) {
 	h.bufferName = name
 	h.buffer = append([]byte(nil), content...)
+}
+
+func (h *testHost) OpenTextEditor(name string, content []byte, submit func([]byte) error) {
+	h.editorName = name
+	h.editorText = append([]byte(nil), content...)
+	h.editorSave = submit
 }
 
 func (h *testHost) Prompt(title string, submit func(string) error) {
@@ -213,14 +222,18 @@ func TestPluginStagesDiffsUnstagesAndCommits(t *testing.T) {
 	if err := host.commands["git.commit"](""); err != nil {
 		t.Fatal(err)
 	}
-	if host.prompt == nil {
-		t.Fatal("git.commit did not open a prompt")
+	if host.editorName != "COMMIT_EDITMSG" || host.editorSave == nil {
+		t.Fatalf("git.commit editor = %q, save callback set = %t", host.editorName, host.editorSave != nil)
 	}
-	if err := host.prompt("add main"); err != nil {
+	if err := host.editorSave([]byte(" \n")); err == nil {
+		t.Fatal("empty commit message was accepted")
+	}
+	message := "add main\n\nExplain why this change is needed.\n"
+	if err := host.editorSave([]byte(message)); err != nil {
 		t.Fatal(err)
 	}
-	if got := runGit(t, root, "log", "-1", "--pretty=%s"); strings.TrimSpace(got) != "add main" {
-		t.Fatalf("commit subject = %q, want add main", got)
+	if got := runGit(t, root, "log", "-1", "--pretty=%B"); strings.TrimSpace(got) != strings.TrimSpace(message) {
+		t.Fatalf("commit message = %q, want %q", got, message)
 	}
 	if host.viewHandle.alive {
 		t.Fatal("committing did not destroy the Git Stage view")

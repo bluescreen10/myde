@@ -23,11 +23,12 @@ func (h *testHost) CurrentDocument() plugin.Document { return h.document }
 func (h *testHost) NewView(ui.View) ui.ViewHandle {
 	return noopViewHandle{}
 }
-func (h *testHost) OpenSidebar(ui.Sidebar)            {}
-func (h *testHost) CloseSidebar()                     {}
-func (h *testHost) OpenReadOnlyBuffer(string, []byte) {}
-func (h *testHost) Prompt(string, func(string) error) {}
-func (h *testHost) SetMessage(message string)         { h.message = message }
+func (h *testHost) OpenSidebar(ui.Sidebar)                            {}
+func (h *testHost) CloseSidebar()                                     {}
+func (h *testHost) OpenReadOnlyBuffer(string, []byte)                 {}
+func (h *testHost) OpenTextEditor(string, []byte, func([]byte) error) {}
+func (h *testHost) Prompt(string, func(string) error)                 {}
+func (h *testHost) SetMessage(message string)                         { h.message = message }
 func (h *testHost) ReplaceCurrentDocument(content []byte) error {
 	h.document.Content = append([]byte(nil), content...)
 	h.document.Dirty = true

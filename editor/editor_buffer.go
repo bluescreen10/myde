@@ -15,6 +15,7 @@ type editorBuffer struct {
 	lspOpened   bool
 	terminal    *shellBuffer
 	view        *viewPanel
+	onSave      func([]byte) error
 }
 
 func (a *App) newEditorBuffer(text *buffer.Buffer) *editorBuffer {

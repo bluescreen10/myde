@@ -57,6 +57,7 @@ type serverEvent struct {
 	path               string
 	diagnostics        []diagnostic
 	completions        []lspCompletion
+	completionReady    bool
 	completionBuffer   *buffer.Buffer
 	completionRevision uint64
 	completionPoint    buffer.Point
@@ -115,6 +116,7 @@ type App struct {
 	running         bool
 	cursorBlinkOn   bool
 	completionEpoch uint64
+	showDiagnostic  bool
 	typingBuffer    *buffer.Buffer
 	typingKind      typingGroup
 
@@ -201,6 +203,7 @@ func newApp(
 		statusNames:    make(map[string]bool),
 		servers:        make(chan serverEvent, 64),
 		cursorBlinkOn:  true,
+		showDiagnostic: true,
 	}
 	app.registerCommands()
 	if err := app.registerCoreModes(); err != nil {
@@ -492,11 +495,19 @@ func (a *App) handleServerEvent(event serverEvent) {
 	if event.completionDetails != nil {
 		a.applyCompletionDetails(*event.completionDetails)
 	}
-	if len(event.completions) > 0 && event.completionBuffer == a.current() &&
+	if event.completionReady && event.completionBuffer == a.current() &&
 		event.completionRevision == event.completionBuffer.Revision() &&
 		event.completionPoint == event.completionBuffer.Cursors()[0].Point &&
 		event.completionEpoch == a.completionEpoch && a.minibuffer == nil &&
 		(a.palette == nil || a.palette.completion) {
+		selectedLabel := ""
+		if a.palette != nil && len(a.palette.filtered) > 0 {
+			selectedLabel = a.palette.filtered[a.palette.selected].label
+		}
+		if len(event.completions) == 0 {
+			a.palette = nil
+			return
+		}
 		items := make([]paletteItem, 0, len(event.completions))
 		for index, completion := range event.completions {
 			items = append(items, paletteItem{
@@ -515,6 +526,14 @@ func (a *App) handleServerEvent(event serverEvent) {
 			}
 			a.applyLSPCompletion(event.completionBuffer, event.completions[index])
 		})
+		if selectedLabel != "" {
+			for index, item := range a.palette.filtered {
+				if item.label == selectedLabel {
+					a.palette.selected = index
+					break
+				}
+			}
+		}
 		a.resolveSelectedCompletion()
 	}
 	if event.definition != nil {
@@ -585,6 +604,12 @@ func defaultBindings() map[string]string {
 }
 
 func (a *App) handleEvent(event terminal.Event) error {
+	// Kitty's enhanced keyboard protocol reports key releases separately.
+	// The terminal decoder marks those events ignored; do not let them close
+	// transient UI such as completion menus.
+	if event.Key == terminal.KeyIgnored {
+		return nil
+	}
 	if !a.isTypingEvent(event) {
 		a.finishTypingGroup()
 	}
@@ -864,6 +889,7 @@ func (a *App) applyEdits(edits []edit) {
 		a.message = current.Name() + " is read-only"
 		return
 	}
+	a.showDiagnostic = false
 	cursors := current.Cursors()
 	changedLine := current.LineCount()
 	for _, change := range edits {
@@ -904,6 +930,7 @@ func (a *App) applyEdits(edits []edit) {
 }
 
 func (a *App) moveCursors(horizontal, vertical int, extend bool) {
+	a.showDiagnostic = true
 	current := a.current()
 	cursors := current.Cursors()
 	for index, cursor := range cursors {
@@ -950,6 +977,7 @@ func (a *App) moveCursors(horizontal, vertical int, extend bool) {
 }
 
 func (a *App) moveLineEdge(end, extend bool) {
+	a.showDiagnostic = true
 	current := a.current()
 	cursors := current.Cursors()
 	for index, cursor := range cursors {
@@ -967,6 +995,7 @@ func (a *App) moveLineEdge(end, extend bool) {
 }
 
 func (a *App) moveDocumentEdge(end, extend bool) {
+	a.showDiagnostic = true
 	current := a.current()
 	cursors := current.Cursors()
 	for index, cursor := range cursors {
@@ -1106,6 +1135,9 @@ func (a *App) handleCompletionEvent(event terminal.Event) error {
 		a.resolveSelectedCompletion()
 		return nil
 	case terminal.KeyEnter, terminal.KeyTab:
+		if completion.completionPending {
+			return nil
+		}
 		if a.current().Revision() != completion.completionRevision || len(completion.filtered) == 0 {
 			a.palette = nil
 			return nil
@@ -1117,6 +1149,7 @@ func (a *App) handleCompletionEvent(event terminal.Event) error {
 	}
 
 	local := completion.localCompletion
+	keepPending := !local && shouldRefreshLSPCompletion(event) && a.hasLanguageServerForCurrentMode()
 	a.palette = nil
 	if err := a.handleEvent(event); err != nil {
 		return err
@@ -1124,7 +1157,19 @@ func (a *App) handleCompletionEvent(event terminal.Event) error {
 	if local && isCompletionEdit(event) {
 		return a.showLocalCompletion()
 	}
+	if keepPending && a.palette == nil && a.hasLanguageServerForCurrentMode() {
+		completion.completionPending = true
+		a.palette = completion
+	}
 	return nil
+}
+
+func shouldRefreshLSPCompletion(event terminal.Event) bool {
+	if event.Key == terminal.KeyBackspace || event.Key == terminal.KeyDelete {
+		return true
+	}
+	return event.Key == terminal.KeyRune && !event.Control && !event.Alt && !event.Super &&
+		event.Rune != 0 && isCompletionRune(event.Rune)
 }
 
 func isCompletionEdit(event terminal.Event) bool {
@@ -1182,6 +1227,7 @@ func (a *App) chooseCompletion(title string, items []paletteItem, local bool, ch
 		return
 	}
 	a.minibuffer = nil
+	a.showDiagnostic = false
 	a.palette = &palette{
 		title:              title,
 		items:              items,

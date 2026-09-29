@@ -336,14 +336,18 @@ func (g *gitPlugin) diff(staged bool, path string, untracked bool) ([]byte, erro
 func (g *gitPlugin) commitCommand(arguments string) error {
 	message := strings.TrimSpace(arguments)
 	if message == "" {
-		g.host.Prompt("Git Commit Message", g.commit)
+		g.host.OpenTextEditor("COMMIT_EDITMSG", nil, g.commitContent)
+		g.host.SetMessage("edit COMMIT_EDITMSG and save to commit")
 		return nil
 	}
-	return g.commit(message)
+	return g.commitContent([]byte(message))
 }
 
-func (g *gitPlugin) commit(message string) error {
-	output, err := g.run("commit", "-m", message)
+func (g *gitPlugin) commitContent(content []byte) error {
+	if strings.TrimSpace(string(content)) == "" {
+		return fmt.Errorf("commit message cannot be empty")
+	}
+	output, err := g.runInput(content, "commit", "--cleanup=strip", "-F", "-")
 	if err != nil {
 		return err
 	}
@@ -393,6 +397,24 @@ func (g *gitPlugin) status() ([]fileState, error) {
 func (g *gitPlugin) run(arguments ...string) ([]byte, error) {
 	command := exec.Command("git", arguments...)
 	command.Dir = g.host.Root()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("git %s: %s", arguments[0], message)
+	}
+	return stdout.Bytes(), nil
+}
+
+func (g *gitPlugin) runInput(input []byte, arguments ...string) ([]byte, error) {
+	command := exec.Command("git", arguments...)
+	command.Dir = g.host.Root()
+	command.Stdin = bytes.NewReader(input)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout

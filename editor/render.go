@@ -46,7 +46,7 @@ func (a *App) render() error {
 			a.renderPalette(width, statusRow)
 		}
 	} else if a.minibuffer == nil && activeView == nil {
-		if item, ok := a.diagnosticAtCursor(); ok {
+		if item, ok := a.visibleDiagnosticAtCursor(); ok {
 			cursorX, cursorY := a.cursorPosition(sidebarWidth, statusRow)
 			a.renderDiagnostic(width, statusRow, cursorX, cursorY, item)
 		}
@@ -409,7 +409,7 @@ func (a *App) renderStatus(width, row int) {
 	}
 	point := a.current().Cursors()[0].Point
 	left := " " + a.message
-	if item, ok := a.diagnosticAtCursor(); ok {
+	if item, ok := a.visibleDiagnosticAtCursor(); ok {
 		left = " Error: " + item.message
 	}
 	sections := a.editorStatusSections(point)
@@ -978,6 +978,13 @@ func (a *App) diagnosticAtCursor() (diagnostic, bool) {
 		}
 	}
 	return diagnostic{}, false
+}
+
+func (a *App) visibleDiagnosticAtCursor() (diagnostic, bool) {
+	if !a.showDiagnostic || a.palette != nil || a.minibuffer != nil {
+		return diagnostic{}, false
+	}
+	return a.diagnosticAtCursor()
 }
 
 func kindAt(spans []syntax.Span, column int) syntax.Kind {

@@ -29,6 +29,7 @@ type Host interface {
 	OpenSidebar(sidebar ui.Sidebar)
 	CloseSidebar()
 	OpenReadOnlyBuffer(name string, content []byte)
+	OpenTextEditor(name string, content []byte, submit func([]byte) error)
 	Prompt(title string, submit func(string) error)
 	SetMessage(message string)
 }

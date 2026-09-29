@@ -28,6 +28,7 @@ type palette struct {
 	hideQueryMarker    bool
 	completion         bool
 	localCompletion    bool
+	completionPending  bool
 	completionRevision uint64
 }
 
