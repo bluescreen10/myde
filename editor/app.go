@@ -68,6 +68,8 @@ type serverEvent struct {
 	debugReady         *protocol.DebugProcess
 	terminal           *shellBuffer
 	terminalOutput     string
+	terminalDone       bool
+	terminalErr        error
 	sidebarRefresh     *sidebarRefreshEvent
 	workspaceSearch    *workspaceSearchEvent
 	viewPreview        *viewPreviewEvent
@@ -353,6 +355,9 @@ func (a *App) pollChanges() {
 	}
 	if width, height, err := a.session.Size(); err == nil {
 		a.screen.Resize(width, height)
+		for _, editorBuffer := range a.buffers {
+			a.resizeTerminalShell(editorBuffer.terminal)
+		}
 	}
 }
 
@@ -477,7 +482,10 @@ func (a *App) handleServerEvent(event serverEvent) {
 		}
 	}
 	if event.terminal != nil {
-		a.finishTerminalCommand(event.terminal, event.terminalOutput)
+		a.appendTerminalOutput(event.terminal, event.terminalOutput)
+		if event.terminalDone {
+			a.finishTerminalCommand(event.terminal, event.terminalErr)
+		}
 	}
 	if event.debugReady != nil && event.debugReady == a.dap {
 		a.startDebugConfiguration(event.debugReady)
@@ -613,6 +621,16 @@ func (a *App) handleEvent(event terminal.Event) error {
 	if !a.isTypingEvent(event) {
 		a.finishTypingGroup()
 	}
+	if a.palette == nil && a.minibuffer == nil && !a.prefix &&
+		!(a.showFiles && a.browser.focused) && a.sidebar == nil &&
+		a.workspaceSearch == nil && a.currentView() == nil {
+		if shell := a.currentEditorBuffer().terminal; shell != nil {
+			handled, err := a.handleTerminalEvent(event, shell)
+			if handled || err != nil {
+				return err
+			}
+		}
+	}
 	if event.Key == terminal.KeyEscape {
 		if a.palette != nil || a.minibuffer != nil || a.prefix {
 			a.cancelAction()
@@ -705,9 +723,6 @@ func (a *App) handleEvent(event terminal.Event) error {
 			a.ensureCursorVisible()
 			return nil
 		}
-	}
-	if terminalBuffer := a.currentEditorBuffer().terminal; terminalBuffer != nil {
-		return a.handleTerminalEvent(event, terminalBuffer)
 	}
 	switch event.Key {
 	case terminal.KeyRune:
@@ -1033,6 +1048,9 @@ func (a *App) ensureCursorVisible() {
 		sidebarWidth = fileSidebarWidth(width)
 	}
 	lineNumberWidth := len(strconv.Itoa(max(1, a.current().LineCount()))) + 2
+	if a.currentEditorBuffer().terminal != nil {
+		lineNumberWidth = 0
+	}
 	available := max(1, width-sidebarWidth-lineNumberWidth)
 	line := []rune(string(a.current().Line(point.Line)))
 	column := min(point.Column, len(line))

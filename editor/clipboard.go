@@ -30,14 +30,8 @@ func (a *App) cut(arguments string) error {
 		a.message = "nothing selected"
 		return nil
 	}
-	if shell := a.currentEditorBuffer().terminal; shell != nil {
-		for _, cursor := range current.Cursors() {
-			start := min(current.Offset(cursor.Anchor), current.Offset(cursor.Point))
-			end := max(current.Offset(cursor.Anchor), current.Offset(cursor.Point))
-			if start != end && start < shell.promptStart {
-				return fmt.Errorf("terminal output cannot be cut")
-			}
-		}
+	if a.currentEditorBuffer().terminal != nil {
+		return fmt.Errorf("terminal output cannot be cut")
 	}
 	if err := writeSystemClipboard(strings.Join(selections, "\n")); err != nil {
 		return err
@@ -48,9 +42,6 @@ func (a *App) cut(arguments string) error {
 }
 
 func (a *App) paste(arguments string) error {
-	if a.current().IsReadOnly() {
-		return fmt.Errorf("%s is read-only", a.current().Name())
-	}
 	text, err := readSystemClipboard()
 	if err != nil {
 		return err
@@ -60,10 +51,17 @@ func (a *App) paste(arguments string) error {
 		return nil
 	}
 	if shell := a.currentEditorBuffer().terminal; shell != nil {
-		if shell.running {
-			return fmt.Errorf("terminal command is still running")
+		if !shell.running || shell.pty == nil {
+			return fmt.Errorf("terminal shell is not running")
 		}
-		a.moveTerminalCursorToEnd(shell)
+		if _, err := shell.pty.Write([]byte(text)); err != nil {
+			return fmt.Errorf("terminal input: %w", err)
+		}
+		a.message = "pasted"
+		return nil
+	}
+	if a.current().IsReadOnly() {
+		return fmt.Errorf("%s is read-only", a.current().Name())
 	}
 	a.insert([]byte(text))
 	a.message = "pasted"

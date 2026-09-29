@@ -307,6 +307,10 @@ func searchSidebarWidth(width int) int {
 func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 	current := a.current()
 	editorBuffer := a.currentEditorBuffer()
+	if editorBuffer.terminal != nil {
+		a.renderTerminalBuffer(sidebarWidth, width, statusRow)
+		return
+	}
 	bodyHeight := statusRow - 1
 	lineNumberWidth := len(strconv.Itoa(max(1, current.LineCount()))) + 2
 	textX := sidebarWidth + lineNumberWidth
@@ -388,6 +392,31 @@ func (a *App) renderBuffer(sidebarWidth, width, statusRow int) {
 				HasUnderlineColor: true,
 			}
 			a.screen.Set(x, y, ' ', style)
+		}
+	}
+}
+
+func (a *App) renderTerminalBuffer(sidebarWidth, width, statusRow int) {
+	current := a.current()
+	bodyHeight := statusRow - 1
+	available := max(0, width-sidebarWidth)
+	style := terminal.Style{Foreground: a.theme.Foreground, Background: a.theme.Background}
+	for row := 0; row < bodyHeight; row++ {
+		lineNumber := a.topLine + row
+		if lineNumber >= current.LineCount() {
+			continue
+		}
+		line := []rune(string(current.Line(lineNumber)))
+		displayColumn := 0
+		for _, value := range line {
+			cellWidth := terminal.RuneWidth(value)
+			if displayColumn+cellWidth > a.leftColumn && displayColumn-a.leftColumn < available {
+				x := sidebarWidth + max(0, displayColumn-a.leftColumn)
+				if displayColumn >= a.leftColumn && x+cellWidth <= width {
+					a.screen.Set(x, row+1, value, style)
+				}
+			}
+			displayColumn += cellWidth
 		}
 	}
 }
@@ -859,6 +888,9 @@ func (a *App) cursorPosition(sidebarWidth, statusRow int) (int, int) {
 func (a *App) bufferPointPosition(point buffer.Point, sidebarWidth int) (int, int) {
 	current := a.current()
 	lineNumberWidth := len(strconv.Itoa(max(1, current.LineCount()))) + 2
+	if a.currentEditorBuffer().terminal != nil {
+		lineNumberWidth = 0
+	}
 	line := []rune(string(current.Line(point.Line)))
 	column := min(point.Column, len(line))
 	x := sidebarWidth + lineNumberWidth + sourceDisplayWidth(line[:column]) - a.leftColumn
