@@ -109,6 +109,8 @@ type App struct {
 	extensions      *extensions
 	bindings        map[string]string
 	commands        map[string]plugin.Command
+	subscribers     map[string][]plugin.EventHandler
+	eventBuffer     *editorBuffer
 	statusItems     []*statusItem
 	statusNames     map[string]bool
 	palette         *palette
@@ -317,6 +319,9 @@ func (a *App) open(path string) error {
 	a.runHooks("open")
 	a.notifyLSPDidOpen(opened)
 	a.activateCurrentMode()
+	if err := a.publishEvent(plugin.EventFileOpen, absolute, a.currentEditorBuffer()); err != nil {
+		a.message = err.Error()
+	}
 	return nil
 }
 

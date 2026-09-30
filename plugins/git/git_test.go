@@ -55,6 +55,10 @@ func (h *testHost) ReplaceCurrentDocument(content []byte) error {
 	return nil
 }
 
+func (h *testHost) Setting(string) string { return "" }
+
+func (h *testHost) Subscribe(string, plugin.EventHandler) error { return nil }
+
 func (h *testHost) RegisterCommand(name string, command plugin.Command) error {
 	h.commands[name] = command
 	return nil

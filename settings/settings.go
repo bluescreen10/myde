@@ -14,8 +14,12 @@ import (
 const (
 	// DefaultTheme is the theme written to a new settings file.
 	DefaultTheme = "vs-dark-2026"
-	application  = "myde"
-	configDirEnv = "MYDE_CONFIG_DIR"
+	// DefaultGoFormatOnSave controls gofmt on file.before-save.
+	DefaultGoFormatOnSave = true
+	// DefaultGoImportsOnSave controls goimports on file.before-save.
+	DefaultGoImportsOnSave = true
+	application            = "myde"
+	configDirEnv           = "MYDE_CONFIG_DIR"
 )
 
 // Store contains the paths and values in myde's user configuration directory.
@@ -114,7 +118,13 @@ func createSettingsFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("create settings file %s: %w", path, err)
 	}
-	if _, err := fmt.Fprintf(file, "theme = %s\n", DefaultTheme); err != nil {
+	if _, err := fmt.Fprintf(
+		file,
+		"theme = %s\ngo-format-on-save = %t\ngo-imports-on-save = %t\n",
+		DefaultTheme,
+		DefaultGoFormatOnSave,
+		DefaultGoImportsOnSave,
+	); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
 		return fmt.Errorf("initialize settings file %s: %w", path, err)

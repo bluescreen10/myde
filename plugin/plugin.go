@@ -10,6 +10,24 @@ import (
 // Command handles a named editor command and its unparsed arguments.
 type Command func(arguments string) error
 
+// Event describes a named editor lifecycle event. Value contains the path of
+// the file involved, or its buffer name when it has no backing path.
+type Event struct {
+	Name  string
+	Value string
+}
+
+// EventHandler handles an editor lifecycle event synchronously. Returning an
+// error from a before event cancels the operation.
+type EventHandler func(Event) error
+
+const (
+	EventFileBeforeSave = "file.before-save"
+	EventFileAfterSave  = "file.after-save"
+	EventFileOpen       = "file.open"
+	EventFileClose      = "file.close"
+)
+
 // Plugin contributes commands and behavior to an editor host.
 type Plugin interface {
 	Name() string
@@ -22,6 +40,8 @@ type Host interface {
 	CurrentPath() string
 	CurrentDocument() Document
 	ReplaceCurrentDocument(content []byte) error
+	Setting(name string) string
+	Subscribe(event string, handler EventHandler) error
 	RegisterCommand(name string, command Command) error
 	RegisterMode(mode Mode) error
 	RegisterStatus(name string, item StatusItem) error

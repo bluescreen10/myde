@@ -15,14 +15,16 @@ func (a *App) Root() string {
 	return a.root
 }
 
-// CurrentPath returns the active buffer's backing path, if it has one.
+// CurrentPath returns the event buffer's backing path while dispatching an
+// event, or the active buffer's path otherwise.
 func (a *App) CurrentPath() string {
-	return a.current().Path()
+	return a.pluginEditorBuffer().text.Path()
 }
 
-// CurrentDocument returns an immutable snapshot of the active buffer.
+// CurrentDocument returns an immutable snapshot of the event buffer while
+// dispatching an event, or the active buffer otherwise.
 func (a *App) CurrentDocument() plugin.Document {
-	current := a.current()
+	current := a.pluginEditorBuffer().text
 	return plugin.Document{
 		Path:     current.Path(),
 		Content:  current.Bytes(),
@@ -31,13 +33,15 @@ func (a *App) CurrentDocument() plugin.Document {
 	}
 }
 
-// ReplaceCurrentDocument replaces the active buffer as one undoable edit.
+// ReplaceCurrentDocument replaces the event buffer while dispatching an event,
+// or the active buffer otherwise, as one undoable edit.
 func (a *App) ReplaceCurrentDocument(content []byte) error {
-	current := a.current()
+	editorBuffer := a.pluginEditorBuffer()
+	current := editorBuffer.text
 	if current.IsReadOnly() {
 		return fmt.Errorf("%s is read-only", current.Name())
 	}
-	if a.currentEditorBuffer().terminal != nil {
+	if editorBuffer.terminal != nil {
 		return fmt.Errorf("terminal buffers cannot be replaced by plugins")
 	}
 	before := current.Bytes()
@@ -59,9 +63,11 @@ func (a *App) ReplaceCurrentDocument(content []byte) error {
 		cursors[index] = buffer.Cursor{Anchor: point, Point: point}
 	}
 	current.SetCursors(cursors)
-	a.currentEditorBuffer().highlighter = a.highlighterForBuffer(current)
+	editorBuffer.highlighter = a.highlighterForBuffer(current)
 	a.notifyLSPFullChange(current)
-	a.ensureCursorVisible()
+	if editorBuffer == a.currentEditorBuffer() {
+		a.ensureCursorVisible()
+	}
 	return nil
 }
 

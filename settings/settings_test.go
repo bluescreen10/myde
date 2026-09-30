@@ -31,7 +31,8 @@ func TestOpenAtCreatesLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(contents), "theme = "+settings.DefaultTheme+"\n"; got != want {
+	if got, want := string(contents), "theme = "+settings.DefaultTheme+
+		"\ngo-format-on-save = true\ngo-imports-on-save = true\n"; got != want {
 		t.Fatalf("settings.conf = %q, want %q", got, want)
 	}
 }
@@ -102,7 +103,8 @@ func TestSetPersistsSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "plugin.auto-update = false\ntheme = midnight\n"
+	want := "go-format-on-save = true\ngo-imports-on-save = true\n" +
+		"plugin.auto-update = false\ntheme = midnight\n"
 	if string(contents) != want {
 		t.Fatalf("settings.conf = %q, want %q", contents, want)
 	}

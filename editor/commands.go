@@ -267,16 +267,10 @@ func (a *App) save(arguments string) error {
 	if arguments != "" && !filepath.IsAbs(arguments) {
 		arguments = filepath.Join(a.root, arguments)
 	}
-	previousPath := current.Path()
-	if err := current.Save(arguments); err != nil {
+	if err := a.saveFileBuffer(current, arguments); err != nil {
 		return err
 	}
-	if current.Path() != previousPath {
-		a.currentEditorBuffer().mode = a.modeForPath(current.Path())
-	}
-	a.currentEditorBuffer().highlighter = a.highlighterForBuffer(current)
 	a.activateCurrentMode()
-	a.notifyLSPDidOpen(current)
 	a.message = "saved " + current.Name()
 	a.runHooks("save")
 	return nil
@@ -360,14 +354,9 @@ func (a *App) saveDirtyBuffersAndQuit(dirty []*buffer.Buffer, index int) {
 }
 
 func (a *App) saveBufferForQuit(current *buffer.Buffer, path string) error {
-	previousPath := current.Path()
-	if err := current.Save(path); err != nil {
+	if err := a.saveFileBuffer(current, path); err != nil {
 		return err
 	}
-	if current.Path() != previousPath {
-		a.editorBufferFor(current).mode = a.modeForPath(current.Path())
-	}
-	a.editorBufferFor(current).highlighter = a.highlighterForBuffer(current)
 	if current == a.current() {
 		a.runHooks("save")
 	}
@@ -377,6 +366,9 @@ func (a *App) saveBufferForQuit(current *buffer.Buffer, path string) error {
 func (a *App) finishQuit() {
 	a.closeWorkspaceSearch()
 	for _, current := range a.buffers {
+		if err := a.publishEvent(plugin.EventFileClose, fileEventValue(current), current); err != nil {
+			a.message = err.Error()
+		}
 		if current.terminal != nil && current.terminal.cancel != nil {
 			current.terminal.cancel()
 		}
@@ -440,24 +432,24 @@ func (a *App) saveAndCloseBuffer(current *buffer.Buffer) {
 }
 
 func (a *App) saveBufferBeforeClose(current *buffer.Buffer, path string) error {
-	previousPath := current.Path()
-	if err := current.Save(path); err != nil {
+	if err := a.saveFileBuffer(current, path); err != nil {
 		return err
 	}
-	if current.Path() != previousPath {
-		a.editorBufferFor(current).mode = a.modeForPath(current.Path())
-	}
-	a.editorBufferFor(current).highlighter = a.highlighterForBuffer(current)
 	a.runHooks("save")
 	a.closeBufferNow(current)
 	return nil
 }
 
 func (a *App) closeBufferNow(removed *buffer.Buffer) {
+	editorBuffer := a.editorBufferFor(removed)
+	value := fileEventValue(editorBuffer)
 	if !a.removeBuffer(removed) {
 		return
 	}
 	a.message = "closed " + removed.Name()
+	if err := a.publishEvent(plugin.EventFileClose, value, editorBuffer); err != nil {
+		a.message = err.Error()
+	}
 }
 
 func (a *App) submitTextEditor(current *buffer.Buffer) error {
@@ -468,7 +460,43 @@ func (a *App) submitTextEditor(current *buffer.Buffer) error {
 	if err := editorBuffer.onSave(current.Bytes()); err != nil {
 		return err
 	}
-	a.removeBuffer(current)
+	value := fileEventValue(editorBuffer)
+	if !a.removeBuffer(current) {
+		return nil
+	}
+	if err := a.publishEvent(plugin.EventFileClose, value, editorBuffer); err != nil {
+		a.message = err.Error()
+	}
+	return nil
+}
+
+func (a *App) saveFileBuffer(current *buffer.Buffer, path string) error {
+	editorBuffer := a.editorBufferFor(current)
+	if editorBuffer == nil {
+		return fmt.Errorf("buffer %s is not open", current.Name())
+	}
+	value := path
+	if value == "" {
+		value = current.Path()
+	}
+	if value != "" && !filepath.IsAbs(value) {
+		value = filepath.Join(a.root, value)
+	}
+	if err := a.publishEvent(plugin.EventFileBeforeSave, value, editorBuffer); err != nil {
+		return err
+	}
+	previousPath := current.Path()
+	if err := current.Save(path); err != nil {
+		return err
+	}
+	if current.Path() != previousPath {
+		editorBuffer.mode = a.modeForPath(current.Path())
+	}
+	editorBuffer.highlighter = a.highlighterForBuffer(current)
+	a.notifyLSPDidOpen(current)
+	if err := a.publishEvent(plugin.EventFileAfterSave, current.Path(), editorBuffer); err != nil {
+		a.message = err.Error()
+	}
 	return nil
 }
 

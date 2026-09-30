@@ -16,6 +16,11 @@ type goPlugin struct {
 	host plugin.Host
 }
 
+const (
+	formatOnSaveSetting  = "go-format-on-save"
+	importsOnSaveSetting = "go-imports-on-save"
+)
+
 // New returns the Go plugin.
 func New() plugin.Plugin {
 	return &goPlugin{}
@@ -59,6 +64,24 @@ func (g *goPlugin) Load(host plugin.Host) error {
 			return err
 		}
 	}
+	for _, formatter := range []struct {
+		command string
+		setting string
+	}{
+		{command: "goimports", setting: importsOnSaveSetting},
+		{command: "gofmt", setting: formatOnSaveSetting},
+	} {
+		if _, err := exec.LookPath(formatter.command); err != nil {
+			continue
+		}
+		command := formatter.command
+		setting := formatter.setting
+		if err := host.Subscribe(plugin.EventFileBeforeSave, func(event plugin.Event) error {
+			return g.formatBeforeSave(event, command, setting)
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -70,17 +93,69 @@ func (g *goPlugin) format(arguments string) error {
 	if document.ReadOnly {
 		return fmt.Errorf("current buffer is read-only")
 	}
-	command := exec.Command("gofmt")
-	command.Stdin = bytes.NewReader(document.Content)
-	formatted, err := command.CombinedOutput()
+	formatted, err := formatContent("gofmt", document.Content, document.Path)
 	if err != nil {
-		return fmt.Errorf("gofmt: %w: %s", err, strings.TrimSpace(string(formatted)))
+		return err
 	}
 	if err := g.host.ReplaceCurrentDocument(formatted); err != nil {
 		return err
 	}
 	g.host.SetMessage("formatted current buffer")
 	return nil
+}
+
+func (g *goPlugin) formatBeforeSave(event plugin.Event, command, setting string) error {
+	if filepath.Ext(event.Value) != ".go" {
+		return nil
+	}
+	enabled, err := g.settingEnabled(setting, true)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return nil
+	}
+	document := g.host.CurrentDocument()
+	if document.ReadOnly {
+		return nil
+	}
+	formatted, err := formatContent(command, document.Content, event.Value)
+	if err != nil {
+		return err
+	}
+	return g.host.ReplaceCurrentDocument(formatted)
+}
+
+func (g *goPlugin) settingEnabled(name string, fallback bool) (bool, error) {
+	value := strings.ToLower(strings.TrimSpace(g.host.Setting(name)))
+	if value == "" {
+		return fallback, nil
+	}
+	switch value {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be true or false", name)
+	}
+}
+
+func formatContent(name string, content []byte, path string) ([]byte, error) {
+	command := exec.Command(name)
+	if path != "" {
+		command.Dir = filepath.Dir(path)
+	}
+	command.Stdin = bytes.NewReader(content)
+	formatted, err := command.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(formatted))
+		if detail == "" {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		return nil, fmt.Errorf("%s: %w: %s", name, err, detail)
+	}
+	return formatted, nil
 }
 
 func (g *goPlugin) vet(arguments string) error {
