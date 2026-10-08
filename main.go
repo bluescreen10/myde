@@ -15,7 +15,7 @@ import (
 	"github.com/bluescreen10/myde/terminal"
 )
 
-const version = "0.1.0"
+const version = "0.2.3"
 
 func main() {
 	if err := run(); err != nil {
