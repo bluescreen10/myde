@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,91 @@ func TestDefaultPageBindingsAndCommands(t *testing.T) {
 	if got := current.Cursors()[0].Point.Line; got != 20 {
 		t.Fatalf("page down line = %d, want 20", got)
 	}
+}
+
+func TestModifiedNavigationShortcutExtendsSelection(t *testing.T) {
+	current := buffer.New()
+	current.Insert(0, []byte("alpha"))
+	current.SetCursors([]buffer.Cursor{{
+		Anchor: buffer.Point{Column: 1},
+		Point:  buffer.Point{Column: 2},
+	}})
+	app := &App{
+		buffers:  []*editorBuffer{{text: current}},
+		browser:  newFileBrowser("", nil, nil),
+		bindings: map[string]string{"ctrl-right": "cursor.line-end"},
+		screen:   terminal.NewScreen(io.Discard, 80, 24),
+	}
+	app.registerCommands()
+
+	if err := app.handleEvent(terminal.Event{Key: terminal.KeyRight, Control: true, Shift: true}); err != nil {
+		t.Fatal(err)
+	}
+	cursor := current.Cursors()[0]
+	if cursor.Anchor.Column != 1 || cursor.Point.Column != 5 {
+		t.Fatalf("cursor after Ctrl-Shift-Right = %+v, want selection from column 1 to 5", cursor)
+	}
+}
+
+func TestWorkspaceChangesRefreshCommandPalette(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "old.go"), []byte("package old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contents := scanWorkspace(root)
+	app := &App{
+		root:        root,
+		files:       contents.files,
+		directories: contents.directories,
+		browser:     newFileBrowser(root, contents.files, contents.directories),
+		commands:    make(map[string]plugin.Command),
+		extensions:  &extensions{functions: make(map[string][]string)},
+	}
+	app.captureFileBrowserDirectories()
+	if err := app.commandPalette(""); err != nil {
+		t.Fatal(err)
+	}
+
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "new.go"), []byte("package nested\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.syncFileBrowser()
+
+	newPath := filepath.Join("nested", "new.go")
+	if !slices.Contains(app.files, newPath) || !slices.Contains(app.directories, "nested") {
+		t.Fatalf("workspace after addition: files=%q directories=%q", app.files, app.directories)
+	}
+	if !paletteContains(app.palette.filtered, newPath) {
+		t.Fatalf("open palette did not pick up %q: %#v", newPath, app.palette.filtered)
+	}
+
+	if err := os.Remove(filepath.Join(root, "old.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(nested, "new.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(nested); err != nil {
+		t.Fatal(err)
+	}
+	app.syncFileBrowser()
+	if len(app.files) != 0 || len(app.directories) != 0 || len(app.palette.filtered) != 0 {
+		t.Fatalf("workspace after removal: files=%q directories=%q palette=%#v",
+			app.files, app.directories, app.palette.filtered)
+	}
+}
+
+func paletteContains(items []paletteItem, value string) bool {
+	for _, item := range items {
+		if item.value == value {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCommandPaletteHasNoMarkerAndOrdersRecentItemsFirst(t *testing.T) {

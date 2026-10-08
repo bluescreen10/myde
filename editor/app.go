@@ -329,9 +329,9 @@ func (a *App) pollChanges() {
 	a.pollSidebarRefresh()
 	a.pollViewRefreshes()
 	a.pollStatusItems()
-	if a.showFiles {
-		a.syncFileBrowser()
-	}
+	// Keep the workspace index current even while the file browser is hidden.
+	// The command palette and project search use the same file list.
+	a.syncFileBrowser()
 	if changed, err := a.extensions.reloadIfChanged(); err != nil {
 		a.message = err.Error()
 	} else if changed {
@@ -690,7 +690,13 @@ func (a *App) handleEvent(event terminal.Event) error {
 			return fmt.Errorf("unknown ctrl-x sequence: %s", key)
 		}
 	}
-	if command := a.bindings[key]; command != "" {
+	command := a.bindings[key]
+	if command == "" && event.Shift {
+		withoutShift := event
+		withoutShift.Shift = false
+		command = selectingNavigationCommand(a.bindings[keyName(withoutShift)])
+	}
+	if command != "" {
 		return a.execute(command)
 	}
 	if key == "ctrl-x" {
@@ -771,6 +777,21 @@ func (a *App) handleEvent(event terminal.Event) error {
 	}
 	a.ensureCursorVisible()
 	return nil
+}
+
+func selectingNavigationCommand(command string) string {
+	name, arguments, _ := strings.Cut(strings.TrimSpace(command), " ")
+	if arguments != "" {
+		return ""
+	}
+	switch name {
+	case "cursor.line-start", "cursor.line-end",
+		"cursor.file-start", "cursor.file-end",
+		"cursor.page-up", "cursor.page-down":
+		return name + " select"
+	default:
+		return ""
+	}
 }
 
 func (a *App) cancelAction() {

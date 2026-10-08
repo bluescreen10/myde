@@ -30,6 +30,7 @@ type palette struct {
 	localCompletion    bool
 	completionPending  bool
 	completionRevision uint64
+	workspaceFiles     bool
 }
 
 type minibuffer struct {

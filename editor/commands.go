@@ -159,15 +159,15 @@ func (a *App) commandPalette(arguments string) error {
 	}
 	sort.Strings(names)
 	commands := paletteItemsByRecent(names, a.recentCommands, "command")
-	files := paletteItemsByRecent(a.files, a.recentFiles, "file")
 	a.palette = &palette{
 		title:           "Command Palette",
 		hideQueryMarker: true,
+		workspaceFiles:  true,
 		source: func(query string) ([]paletteItem, string) {
 			if strings.HasPrefix(query, ">") {
 				return commands, strings.TrimSpace(strings.TrimPrefix(query, ">"))
 			}
-			return files, query
+			return paletteItemsByRecent(a.files, a.recentFiles, "file"), query
 		},
 		onChoose: func(item paletteItem) {
 			if item.kind == "command" {
@@ -190,13 +190,43 @@ func (a *App) openFilePalette(arguments string) error {
 	if arguments != "" {
 		return a.open(arguments)
 	}
-	items := paletteItemsByRecent(a.files, a.recentFiles, "file")
-	a.choose("Open file", items, func(item paletteItem) {
-		if err := a.open(item.value); err != nil {
-			a.message = err.Error()
-		}
-	})
+	a.minibuffer = nil
+	a.message = ""
+	a.palette = &palette{
+		title:          "Open file",
+		items:          paletteItemsByRecent(a.files, a.recentFiles, "file"),
+		workspaceFiles: true,
+		onChoose: func(item paletteItem) {
+			if err := a.open(item.value); err != nil {
+				a.message = err.Error()
+			}
+		},
+	}
+	a.palette.update()
 	return nil
+}
+
+func (a *App) refreshWorkspaceFilePalette() {
+	current := a.palette
+	if current == nil || !current.workspaceFiles {
+		return
+	}
+	selectedKind := ""
+	selectedValue := ""
+	if current.selected >= 0 && current.selected < len(current.filtered) {
+		selectedKind = current.filtered[current.selected].kind
+		selectedValue = current.filtered[current.selected].value
+	}
+	if current.source == nil {
+		current.items = paletteItemsByRecent(a.files, a.recentFiles, "file")
+	}
+	current.update()
+	for index, item := range current.filtered {
+		if item.kind == selectedKind && item.value == selectedValue {
+			current.selected = index
+			break
+		}
+	}
 }
 
 func (a *App) recordRecentFile(path string) {

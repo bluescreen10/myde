@@ -516,6 +516,7 @@ func (a *App) syncFileBrowser() {
 }
 
 func (a *App) replaceFileBrowser(contents workspaceContents, selectedPath string) {
+	filesChanged := !equalPaths(contents.files, a.files)
 	expanded := a.browser.expanded
 	query := append([]rune(nil), a.browser.query...)
 	top := a.browser.top
@@ -542,6 +543,9 @@ func (a *App) replaceFileBrowser(contents workspaceContents, selectedPath string
 	browser.top = min(top, max(0, len(browser.entries)-1))
 	a.browser = browser
 	a.captureFileBrowserDirectories()
+	if filesChanged {
+		a.refreshWorkspaceFilePalette()
+	}
 }
 
 func (a *App) hasFileBrowserChanges() bool {
