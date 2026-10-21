@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -55,6 +56,55 @@ func TestSetPathPreservesDirtyContentAndHistory(t *testing.T) {
 	}
 	if !b.Undo() || string(b.Bytes()) != "before" {
 		t.Fatalf("undo after SetPath = %q", b.Bytes())
+	}
+}
+
+func TestBackingPathUsesDiskSpelling(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS path spelling")
+	}
+	root := t.TempDir()
+	directory := filepath.Join(root, "gamekit")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inputDirectory := filepath.Join(root, "GameKit")
+	if _, err := os.Stat(inputDirectory); err != nil {
+		t.Skip("filesystem is case sensitive")
+	}
+	path := filepath.Join(directory, "main.go")
+	if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := buffer.Open(filepath.Join(inputDirectory, "MAIN.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Path(); got != path {
+		t.Fatalf("opened path = %q, want %q", got, path)
+	}
+	b.Insert(b.Len(), []byte(" after"))
+	if err := b.Save(filepath.Join(inputDirectory, "MAIN.go")); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Path(); got != path {
+		t.Fatalf("saved path = %q, want %q", got, path)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "before after" {
+		t.Fatalf("saved content = %q, %v", data, err)
+	}
+	newPath := filepath.Join(directory, "New.go")
+	if err := b.Save(filepath.Join(inputDirectory, "New.go")); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Path(); got != newPath {
+		t.Fatalf("new path = %q, want %q", got, newPath)
+	}
+	if err := b.SetPath(filepath.Join(inputDirectory, "new.GO")); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Path(); got != newPath {
+		t.Fatalf("updated path = %q, want %q", got, newPath)
 	}
 }
 

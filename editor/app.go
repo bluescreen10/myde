@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bluescreen10/myde/buffer"
+	"github.com/bluescreen10/myde/internal/pathutil"
 	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/settings"
 	"github.com/bluescreen10/myde/terminal"
@@ -168,7 +169,7 @@ func newApp(
 	store *settings.Store,
 	installed ...plugin.Plugin,
 ) (*App, error) {
-	absolute, err := filepath.Abs(root)
+	absolute, err := pathutil.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace: %w", err)
 	}
@@ -302,7 +303,7 @@ func (a *App) open(path string) error {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(a.root, path)
 	}
-	absolute, err := filepath.Abs(path)
+	absolute, err := pathutil.Abs(path)
 	if err != nil {
 		return err
 	}

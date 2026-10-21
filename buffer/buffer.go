@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/bluescreen10/myde/internal/pathutil"
 )
 
 // Point identifies a zero-based line and display column.
@@ -107,7 +109,7 @@ func NewReadOnly(name string, content []byte) *Buffer {
 
 // Open loads path into a buffer.
 func Open(path string) (*Buffer, error) {
-	absolute, err := filepath.Abs(path)
+	absolute, err := pathutil.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s: %w", path, err)
 	}
@@ -493,7 +495,7 @@ func (b *Buffer) SetCursors(cursors []Cursor) {
 // SetPath updates the backing path after its file has been moved externally.
 // It preserves the buffer contents, dirty state, and undo history.
 func (b *Buffer) SetPath(path string) error {
-	absolute, err := filepath.Abs(path)
+	absolute, err := pathutil.Abs(path)
 	if err != nil {
 		return fmt.Errorf("resolve %s: %w", path, err)
 	}
@@ -524,7 +526,7 @@ func (b *Buffer) Save(path string) error {
 	}
 
 	if path != "" {
-		absolute, err := filepath.Abs(path)
+		absolute, err := pathutil.Abs(path)
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", path, err)
 		}
