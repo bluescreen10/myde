@@ -16,6 +16,20 @@ type languageServerSession struct {
 	cancel            context.CancelFunc
 	syncKind          int
 	completionResolve bool
+	messages          []string
+	lastError         string
+}
+
+type languageServerMessage struct {
+	Type    int    `json:"type"`
+	Message string `json:"message"`
+}
+
+func (s *languageServerSession) recordMessage(message string) {
+	s.messages = append(s.messages, message)
+	if len(s.messages) > 200 {
+		s.messages = s.messages[len(s.messages)-200:]
+	}
 }
 
 func (a *App) languageServerForBuffer(current *buffer.Buffer) *languageServerSession {

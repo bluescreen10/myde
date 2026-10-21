@@ -154,6 +154,10 @@ and recently chosen commands appear first. Important commands include:
   `C-Space` opens completion; Up/Down and Enter or Tab select a suggestion.
   Completion details can include signatures and documentation. Errors appear
   with curly underlines and a diagnostic card when the cursor moves onto them.
+- `lsp.log` — open the current mode's recent language server messages, including
+  workspace-loading errors. Use `lsp.log Go` to inspect Go's server from any
+  buffer. If `gopls` reports "no views", check this log for the underlying Go
+  environment or workspace error, then run `go.lsp.restart` after correcting it.
 - `go.debug.start`, `go.debug.stop`, and `go.debug.restart` — control Go's Delve
   adapter from any buffer or view. `go.debug.run <program>` starts Go's adapter
   if needed and launches that program; without an argument it prompts.

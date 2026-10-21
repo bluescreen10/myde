@@ -63,6 +63,11 @@ func TestModeToolHelper(t *testing.T) {
 		if kind == "lsp" {
 			if len(message.ID) == 0 {
 				if message.Method == "textDocument/didOpen" {
+					if name == "workspace-error" {
+						write(map[string]any{"jsonrpc": "2.0", "method": "window/logMessage", "params": map[string]any{"type": 3, "message": "Starting workspace load"}})
+						write(map[string]any{"jsonrpc": "2.0", "method": "window/showMessage", "params": map[string]any{"type": 1, "message": "go command required, not found\nfailed to load workspace view"}})
+						continue
+					}
 					var params struct {
 						TextDocument struct {
 							URI string `json:"uri"`
@@ -71,6 +76,10 @@ func TestModeToolHelper(t *testing.T) {
 					_ = json.Unmarshal(message.Params, &params)
 					write(map[string]any{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": map[string]any{"uri": params.TextDocument.URI, "diagnostics": []any{map[string]any{"range": map[string]any{"start": map[string]int{"line": 0, "character": 0}, "end": map[string]int{"line": 0, "character": 1}}, "severity": 1, "message": name + " diagnostics"}}}})
 				}
+				continue
+			}
+			if name == "workspace-error" && (message.Method == "textDocument/definition" || message.Method == "textDocument/completion") {
+				write(map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": 0, "message": "no views"}})
 				continue
 			}
 			var result any
@@ -376,6 +385,49 @@ func TestModeServiceErrorsDoNotStopOtherModes(t *testing.T) {
 	h.wait("Go debugger still alive", func() bool { return len(p.messages(t, "Go", "dap", "continue")) > 0 })
 	h.exec("lsp.definition")
 	h.wait("Go server still alive", func() bool { return h.app.CurrentDocument().Cursor.Line == 1 })
+}
+
+func TestLanguageServerWorkspaceErrorsRemainVisibleAndHaveReadableLogs(t *testing.T) {
+	h, p := toolHarness(t)
+	h.exec("file.open a.go")
+	if err := h.app.RunLanguageServer("Go", p.program("lsp", "workspace-error")); err != nil {
+		t.Fatal(err)
+	}
+	h.wait("workspace failure", func() bool { return h.contains("go command required, not found") })
+	for _, command := range []string{"lsp.definition", "completion.show"} {
+		h.app.SetMessage("")
+		h.exec(command)
+		method := "textDocument/definition"
+		if command == "completion.show" {
+			method = "textDocument/completion"
+		}
+		h.wait(command+" response", func() bool {
+			return len(p.messages(t, "workspace-error", "lsp", method)) > 0 && h.contains("lsp.log")
+		})
+		if !h.contains("go command required, not found") {
+			t.Fatal("request error hid the workspace failure")
+		}
+	}
+	h.exec("file.open a.ts")
+	h.exec("lsp.log Go")
+	for _, want := range []string{"Workspace: " + h.root, "Server: " + p.executable, "Starting workspace load", "go command required, not found\nfailed to load workspace view", "textDocument/definition", "textDocument/completion", "no views"} {
+		if !strings.Contains(h.content(), want) {
+			t.Fatalf("language server log missing %q: %s", want, h.content())
+		}
+	}
+	if err := h.app.ReplaceCurrentDocument([]byte("edit")); err == nil {
+		t.Fatal("language server log is editable")
+	}
+	h.exec("file.open a.go")
+	if err := h.app.RunLanguageServer("Go", p.program("lsp", "recovered")); err != nil {
+		t.Fatal(err)
+	}
+	h.exec("lsp.definition")
+	h.wait("recovered definition", func() bool { return h.app.CurrentDocument().Cursor.Line == 1 })
+	h.exec("lsp.log")
+	if strings.Contains(h.content(), "go command required") {
+		t.Fatal("new server retained the previous session's failure")
+	}
 }
 
 func TestModeServiceRunUsesExplicitPrograms(t *testing.T) {

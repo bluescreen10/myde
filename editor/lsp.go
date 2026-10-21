@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf16"
@@ -83,6 +84,22 @@ func (a *App) lspStop(arguments string) error {
 		arguments = a.currentEditorBuffer().mode
 	}
 	return a.StopLanguageServer(arguments)
+}
+
+func (a *App) lspLog(arguments string) error {
+	if arguments == "" {
+		arguments = a.currentEditorBuffer().mode
+	}
+	mode, err := a.registeredMode(arguments)
+	if err != nil {
+		return err
+	}
+	if mode.languageServer == nil {
+		return fmt.Errorf("no language server log for %s", mode.Name)
+	}
+	content := "Workspace: " + a.root + "\nServer: " + mode.serverProgram.Command + "\n\n" + strings.Join(mode.languageServer.messages, "\n\n")
+	a.OpenReadOnlyBuffer(mode.Name+" language server log", []byte(content))
+	return nil
 }
 
 func languageServerRequest(root string, method string, params json.RawMessage) (any, error) {
@@ -450,6 +467,13 @@ func (a *App) readLSPEvents(session *languageServerSession) {
 	server := session.process
 	defer func() { a.servers <- serverEvent{lspStopped: session} }()
 	for event := range server.Events() {
+		if event.Method == "window/showMessage" || event.Method == "window/logMessage" {
+			var message languageServerMessage
+			if json.Unmarshal(event.Params, &message) == nil && message.Message != "" {
+				a.servers <- serverEvent{lspSource: session, lspMessage: &message}
+			}
+			continue
+		}
 		if event.Method != "textDocument/publishDiagnostics" {
 			continue
 		}

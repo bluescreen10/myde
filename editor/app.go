@@ -47,6 +47,7 @@ type statusRefreshEvent struct {
 type serverEvent struct {
 	lspSource          *languageServerSession
 	lspStopped         *languageServerSession
+	lspMessage         *languageServerMessage
 	path               string
 	diagnostics        []diagnostic
 	completions        []lspCompletion
@@ -470,6 +471,17 @@ func (a *App) handleServerEvent(event serverEvent) {
 	if event.lspSource != nil && event.lspSource.mode.languageServer != event.lspSource {
 		return
 	}
+	if event.lspMessage != nil && event.lspSource != nil {
+		session := event.lspSource
+		message := event.lspMessage
+		session.recordMessage(message.Message)
+		if message.Type == 1 {
+			session.lastError = message.Message
+		}
+		if message.Type == 1 || message.Type == 2 {
+			event.message = session.mode.Name + " LSP (lsp.log): " + strings.Join(strings.Fields(message.Message), " ")
+		}
+	}
 	if session := event.lspStopped; session != nil {
 		if session.mode.languageServer == session {
 			a.clearLanguageServer(session.mode)
@@ -534,7 +546,13 @@ func (a *App) handleServerEvent(event serverEvent) {
 			}
 		}
 	}
+	if event.message != "" && event.lspSource != nil && event.lspMessage == nil {
+		event.lspSource.recordMessage(event.message)
+	}
 	if event.message != "" && (event.lspSource == nil || a.currentEditorBuffer().lsp == event.lspSource) {
+		if event.lspSource != nil && event.lspSource.lastError != "" && strings.Contains(strings.ToLower(event.message), "no views") {
+			event.message = event.lspSource.mode.Name + " LSP (lsp.log): " + strings.Join(strings.Fields(event.lspSource.lastError), " ")
+		}
 		a.message = event.message
 	}
 	if event.completionDetails != nil && (event.lspSource == nil || a.currentEditorBuffer().lsp == event.lspSource) {

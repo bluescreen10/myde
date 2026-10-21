@@ -52,6 +52,7 @@ func (a *App) registerCommands() {
 		"file.rename":             a.renameFile,
 		"file.save":               a.save,
 		"lsp.definition":          a.requestLSPDefinition,
+		"lsp.log":                 a.lspLog,
 		"lsp.start":               a.lspStart,
 		"lsp.run":                 a.lspStart,
 		"lsp.stop":                a.lspStop,
