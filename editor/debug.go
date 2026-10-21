@@ -13,37 +13,44 @@ import (
 )
 
 func (a *App) debugStart(arguments string) error {
+	key := a.currentEditorBuffer().mode
 	if arguments == "" {
-		mode := a.modeForBuffer(a.current())
-		if mode.DebugAdapter.Program.Command != "" {
-			return a.startDebugAdapter(mode.DebugAdapter, a.currentEditorBuffer().mode)
+		if mode := a.modes[key]; mode != nil && mode.debugConfiguration().Program.Command != "" {
+			return a.StartDebugAdapter(key)
 		}
 		a.prompt("Debug adapter command", func(command string) {
-			if err := a.debugStart(command); err != nil {
+			if err := a.runDebugAdapterCommand(key, command); err != nil {
 				a.message = err.Error()
 			}
 		})
 		return nil
 	}
-	command, commandArguments, err := splitCommand(arguments)
+	return a.runDebugAdapterCommand(key, arguments)
+}
+
+func (a *App) runDebugAdapterCommand(mode, arguments string) error {
+	command, args, err := splitCommand(arguments)
 	if err != nil {
 		return err
 	}
-	return a.startDebugAdapter(plugin.DebugAdapter{
-		Program: plugin.Program{Command: command, Arguments: commandArguments},
-	}, a.currentEditorBuffer().mode)
+	return a.RunDebugAdapter(mode, plugin.DebugAdapter{Program: plugin.Program{Command: command, Arguments: args}, Transport: plugin.DebugStandardIO})
 }
 
-func (a *App) startDebugAdapter(configuration plugin.DebugAdapter, mode string) error {
+func (a *App) debugRestart(arguments string) error {
+	if arguments != "" {
+		return a.runDebugAdapterCommand(a.currentEditorBuffer().mode, arguments)
+	}
+	return a.RestartDebugAdapter(a.currentEditorBuffer().mode)
+}
+
+func (a *App) startDebugAdapter(configuration plugin.DebugAdapter, mode *editingMode) error {
 	command, err := exec.LookPath(configuration.Program.Command)
 	if err != nil {
 		return fmt.Errorf("find %s: %w", configuration.Program.Command, err)
 	}
-	if a.dapCancel != nil {
-		a.dapCancel()
+	if err := a.StopDebugAdapter(mode.Name); err != nil {
+		return err
 	}
-	a.dap = nil
-	a.dapMode = ""
 	ctx, cancel := context.WithCancel(context.Background())
 	var adapter *protocol.DebugProcess
 	if configuration.Transport == plugin.DebugReverseTCP {
@@ -55,9 +62,10 @@ func (a *App) startDebugAdapter(configuration plugin.DebugAdapter, mode string) 
 		cancel()
 		return err
 	}
-	a.dap = adapter
-	a.dapCancel = cancel
-	a.dapMode = mode
+	session := &debugSession{mode: mode, adapter: adapter, cancel: cancel}
+	mode.debugger = session
+	mode.debuggerConfig = configuration
+	mode.debuggerConfig.Program.Arguments = append([]string(nil), configuration.Program.Arguments...)
 	requestContext, requestCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer requestCancel()
 	err = adapter.Request(requestContext, "initialize", map[string]any{
@@ -65,40 +73,28 @@ func (a *App) startDebugAdapter(configuration plugin.DebugAdapter, mode string) 
 		"pathFormat": "path", "linesStartAt1": true, "columnsStartAt1": true,
 	}, nil)
 	if err != nil {
-		cancel()
-		a.dap = nil
+		a.clearDebugAdapter(mode)
 		return err
 	}
-	go a.readDebugEvents(adapter)
-	a.message = "debug adapter started: " + command
+	go a.readDebugEvents(session)
+	a.message = mode.Name + " debug adapter started: " + command
 	return nil
 }
 
 func (a *App) debugLaunch(arguments string) error {
-	if a.dap == nil {
-		return fmt.Errorf("start a debug adapter first")
+	mode := a.currentEditorBuffer().mode
+	if a.currentDebugSession() == nil {
+		return fmt.Errorf("start this mode's debug adapter first")
 	}
 	if arguments == "" {
 		a.prompt("Program to debug", func(program string) {
-			if err := a.debugLaunch(program); err != nil {
+			if err := a.LaunchDebugProgram(mode, program); err != nil {
 				a.message = err.Error()
 			}
 		})
 		return nil
 	}
-	adapter := a.dap
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		err := adapter.Request(ctx, "launch", map[string]any{
-			"request": "launch", "program": arguments, "cwd": a.root,
-		}, nil)
-		if err != nil {
-			a.servers <- serverEvent{message: "debug launch: " + err.Error()}
-		}
-	}()
-	a.message = "debug launch requested"
-	return nil
+	return a.LaunchDebugProgram(mode, arguments)
 }
 
 func (a *App) debugToggleBreakpoint(arguments string) error {
@@ -108,14 +104,17 @@ func (a *App) debugToggleBreakpoint(arguments string) error {
 	}
 	line := a.current().Cursors()[0].Point.Line
 	current := a.currentEditorBuffer()
+	if current.breakpoints == nil {
+		current.breakpoints = make(map[int]bool)
+	}
 	if current.breakpoints[line] {
 		delete(current.breakpoints, line)
 	} else {
 		current.breakpoints[line] = true
 	}
-	if a.dap != nil {
+	if session := a.currentDebugSession(); session != nil {
 		lines := breakpointLines(current)
-		go a.sendBreakpoints(a.dap, path, lines)
+		go a.sendBreakpoints(session, path, lines)
 	}
 	return nil
 }
@@ -137,62 +136,62 @@ func (a *App) debugStepOut(arguments string) error {
 }
 
 func (a *App) debugExecution(command string, arguments any) error {
-	if a.dap == nil {
-		return fmt.Errorf("debug adapter is not running")
+	session := a.currentDebugSession()
+	if session == nil {
+		return fmt.Errorf("this mode’s debug adapter is not running")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return a.dap.Request(ctx, command, arguments, nil)
+	return session.adapter.Request(ctx, command, arguments, nil)
 }
 
 func (a *App) debugDisconnect(arguments string) error {
-	if a.dap == nil {
-		return nil
+	if arguments == "" {
+		arguments = a.currentEditorBuffer().mode
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	err := a.dap.Request(ctx, "disconnect", map[string]any{"terminateDebuggee": true}, nil)
-	if a.dapCancel != nil {
-		a.dapCancel()
-	}
-	a.dap = nil
-	a.dapMode = ""
-	return err
+	return a.StopDebugAdapter(arguments)
 }
 
-func (a *App) readDebugEvents(adapter *protocol.DebugProcess) {
+func (a *App) readDebugEvents(session *debugSession) {
+	adapter := session.adapter
+	defer func() { a.servers <- serverEvent{debugStopped: session} }()
 	for event := range adapter.Events() {
-		message := "debug: " + event.Event
+		message := session.mode.Name + " debug: " + event.Event
 		if event.Event == "initialized" {
-			a.servers <- serverEvent{debugReady: adapter}
+			a.servers <- serverEvent{debugSource: session, debugReady: session}
 		}
 		if event.Event == "output" {
 			var body struct {
 				Output string `json:"output"`
 			}
 			if json.Unmarshal(event.Body, &body) == nil && body.Output != "" {
-				message = "debug: " + body.Output
+				message = session.mode.Name + " debug: " + body.Output
 			}
 		}
-		a.servers <- serverEvent{message: message}
+		a.servers <- serverEvent{debugSource: session, message: message}
+		if event.Event == "terminated" {
+			a.servers <- serverEvent{debugStopped: session}
+			return
+		}
 	}
 }
 
-func (a *App) startDebugConfiguration(adapter *protocol.DebugProcess) {
+func (a *App) startDebugConfiguration(session *debugSession) {
+	adapter := session.adapter
 	breakpoints := make(map[string][]int, len(a.buffers))
 	for _, current := range a.buffers {
-		if current.text.Path() != "" && len(current.breakpoints) > 0 {
+		if current.mode == modeKey(session.mode.Name) && current.text.Path() != "" && len(current.breakpoints) > 0 {
 			breakpoints[current.text.Path()] = breakpointLines(current)
 		}
 	}
 	go func() {
 		for path, lines := range breakpoints {
-			a.sendBreakpoints(adapter, path, lines)
+			a.sendBreakpoints(session, path, lines)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := adapter.Request(ctx, "configurationDone", map[string]any{}, nil); err != nil {
-			a.servers <- serverEvent{message: "debug configuration: " + err.Error()}
+			a.servers <- serverEvent{debugSource: session, message: "debug configuration: " + err.Error()}
 		}
 	}()
 }
@@ -206,7 +205,8 @@ func breakpointLines(current *editorBuffer) []int {
 	return lines
 }
 
-func (a *App) sendBreakpoints(adapter *protocol.DebugProcess, path string, lines []int) {
+func (a *App) sendBreakpoints(session *debugSession, path string, lines []int) {
+	adapter := session.adapter
 	breakpoints := make([]map[string]int, 0, len(lines))
 	for _, line := range lines {
 		breakpoints = append(breakpoints, map[string]int{"line": line + 1})
@@ -218,6 +218,6 @@ func (a *App) sendBreakpoints(adapter *protocol.DebugProcess, path string, lines
 		"breakpoints": breakpoints,
 	}, nil)
 	if err != nil {
-		a.servers <- serverEvent{message: "set breakpoints: " + err.Error()}
+		a.servers <- serverEvent{debugSource: session, message: "set breakpoints: " + err.Error()}
 	}
 }

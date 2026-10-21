@@ -264,16 +264,22 @@ const (
 	KeyPageUp
 	KeyPageDown
 	KeyIgnored
+	KeyMouse
 )
 
 // Event is one decoded keyboard event.
 type Event struct {
-	Key     Key
-	Rune    rune
-	Shift   bool
-	Control bool
-	Alt     bool
-	Super   bool
+	Key          Key
+	Rune         rune
+	Shift        bool
+	Control      bool
+	Alt          bool
+	Super        bool
+	MouseX       int
+	MouseY       int
+	MouseButton  int
+	MouseMotion  bool
+	MouseRelease bool
 }
 
 // Reader decodes terminal input.
@@ -342,7 +348,7 @@ func (r *Reader) readEscape() (Event, error) {
 			return Event{}, readErr
 		}
 		sequence.WriteByte(value)
-		if (value >= 'A' && value <= 'Z') || value == '~' || value == 'u' {
+		if value >= 0x40 && value <= 0x7e {
 			break
 		}
 	}
@@ -350,6 +356,21 @@ func (r *Reader) readEscape() (Event, error) {
 }
 
 func escapeEvent(sequence string) Event {
+	if strings.HasPrefix(sequence, "<") && (strings.HasSuffix(sequence, "M") || strings.HasSuffix(sequence, "m")) {
+		fields := strings.Split(sequence[1:len(sequence)-1], ";")
+		if len(fields) != 3 {
+			return Event{Key: KeyIgnored}
+		}
+		button, err1 := strconv.Atoi(fields[0])
+		x, err2 := strconv.Atoi(fields[1])
+		y, err3 := strconv.Atoi(fields[2])
+		if err1 != nil || err2 != nil || err3 != nil || x < 1 || y < 1 {
+			return Event{Key: KeyIgnored}
+		}
+		return Event{Key: KeyMouse, MouseX: x - 1, MouseY: y - 1, MouseButton: button & 67,
+			MouseMotion: button&32 != 0, MouseRelease: strings.HasSuffix(sequence, "m"),
+			Shift: button&4 != 0, Alt: button&8 != 0, Control: button&16 != 0}
+	}
 	switch sequence {
 	case "A":
 		return Event{Key: KeyUp}
@@ -505,7 +526,7 @@ func (s *Session) Suspend() error {
 	if !s.active {
 		return nil
 	}
-	_, writeErr := s.output.WriteString("\x1b[<u\x1b[0m\x1b[?1049l\x1b[?25h")
+	_, writeErr := s.output.WriteString("\x1b[?1002l\x1b[?1006l\x1b[<u\x1b[0m\x1b[?1049l\x1b[?25h")
 	restoreErr := restore(s.input.Fd(), s.state)
 	if restoreErr == nil {
 		s.active = false
@@ -530,7 +551,7 @@ func (s *Session) Resume() error {
 	s.state = state
 	// Mode 7 disambiguates keys and reports event types and alternate keys. This
 	// matches modern TUIs while leaving ordinary text as plain UTF-8.
-	if _, err := s.output.WriteString("\x1b[?1049h\x1b[>7u\x1b[?25h\x1b[2J"); err != nil {
+	if _, err := s.output.WriteString("\x1b[?1049h\x1b[>7u\x1b[?1002h\x1b[?1006h\x1b[?25h\x1b[2J"); err != nil {
 		_ = restore(s.input.Fd(), state)
 		return fmt.Errorf("enter terminal screen: %w", err)
 	}

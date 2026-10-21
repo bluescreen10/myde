@@ -12,12 +12,19 @@ import (
 )
 
 type testHost struct {
-	commands    map[string]plugin.Command
-	document    plugin.Document
-	modes       []plugin.Mode
-	message     string
-	settings    map[string]string
-	subscribers map[string][]plugin.EventHandler
+	restarts     int
+	lspCalls     []string
+	lspProgram   plugin.Program
+	debugCalls   []string
+	debugProgram string
+	debugConfig  plugin.DebugAdapter
+	prompt       func(string) error
+	commands     map[string]plugin.Command
+	document     plugin.Document
+	modes        []plugin.Mode
+	message      string
+	settings     map[string]string
+	subscribers  map[string][]plugin.EventHandler
 }
 
 func (h *testHost) Root() string                     { return "" }
@@ -30,7 +37,7 @@ func (h *testHost) OpenSidebar(ui.Sidebar)                            {}
 func (h *testHost) CloseSidebar()                                     {}
 func (h *testHost) OpenReadOnlyBuffer(string, []byte)                 {}
 func (h *testHost) OpenTextEditor(string, []byte, func([]byte) error) {}
-func (h *testHost) Prompt(string, func(string) error)                 {}
+func (h *testHost) Prompt(_ string, submit func(string) error)        { h.prompt = submit }
 func (h *testHost) SetMessage(message string)                         { h.message = message }
 func (h *testHost) ReplaceCurrentDocument(content []byte) error {
 	h.document.Content = append([]byte(nil), content...)
@@ -79,7 +86,7 @@ func TestPluginRegistersGoModeAndCommands(t *testing.T) {
 	if mode.DebugAdapter.Program.Command != "dlv" || mode.DebugAdapter.Transport != plugin.DebugReverseTCP {
 		t.Fatalf("debug adapter = %#v", mode.DebugAdapter)
 	}
-	for _, name := range []string{"go.fmt", "go.vet", "go.build", "go.test"} {
+	for _, name := range []string{"go.fmt", "go.vet", "go.build", "go.test", "go.lsp.restart", "go.lsp.start", "go.lsp.stop", "go.lsp.run"} {
 		if host.commands[name] == nil {
 			t.Fatalf("command %q was not registered", name)
 		}
@@ -163,3 +170,116 @@ func TestFormatReplacesCurrentBuffer(t *testing.T) {
 		t.Fatalf("formatted buffer = %q, want %q", host.document.Content, want)
 	}
 }
+
+func (h *testHost) OpenFile(path string) error { return nil }
+func (h *testHost) StartLanguageServer(mode string) error {
+	h.lspCalls = append(h.lspCalls, "start "+mode)
+	return nil
+}
+func (h *testHost) RunLanguageServer(mode string, program plugin.Program) error {
+	h.lspCalls = append(h.lspCalls, "run "+mode)
+	h.lspProgram = program
+	return nil
+}
+func (h *testHost) StopLanguageServer(mode string) error {
+	h.lspCalls = append(h.lspCalls, "stop "+mode)
+	return nil
+}
+func (h *testHost) RestartLanguageServer(mode string) error {
+	h.lspCalls = append(h.lspCalls, "restart "+mode)
+	h.restarts++
+	return nil
+}
+
+func TestGoLanguageServerRestart(t *testing.T) {
+	host := &testHost{commands: make(map[string]plugin.Command), document: plugin.Document{Path: "main.go"}}
+	if err := golangplugin.New().Load(host); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.commands["go.lsp.restart"](""); err != nil {
+		t.Fatal(err)
+	}
+	if host.restarts != 1 {
+		t.Fatal("plugin did not restart the language server")
+	}
+}
+
+func (h *testHost) StartDebugAdapter(mode string) error {
+	h.debugCalls = append(h.debugCalls, "start "+mode)
+	return nil
+}
+func (h *testHost) RunDebugAdapter(mode string, config plugin.DebugAdapter) error {
+	h.debugCalls = append(h.debugCalls, "run "+mode)
+	h.debugConfig = config
+	return nil
+}
+func (h *testHost) StopDebugAdapter(mode string) error {
+	h.debugCalls = append(h.debugCalls, "stop "+mode)
+	return nil
+}
+func (h *testHost) RestartDebugAdapter(mode string) error {
+	h.debugCalls = append(h.debugCalls, "restart "+mode)
+	return nil
+}
+func (h *testHost) LaunchDebugProgram(mode, program string) error {
+	h.debugCalls = append(h.debugCalls, "launch "+mode)
+	h.debugProgram = program
+	return nil
+}
+
+func TestGoOwnsLifecycleCommandsFromOtherModes(t *testing.T) {
+	host := &testHost{commands: make(map[string]plugin.Command), document: plugin.Document{Path: "typescript.ts"}}
+	if err := golangplugin.New().Load(host); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"start", "stop", "restart"} {
+		name := "go.lsp." + action
+		if err := host.commands[name](""); err != nil {
+			t.Fatal(err)
+		}
+		if host.lspCalls[len(host.lspCalls)-1] != action+" Go" {
+			t.Fatalf("wrong owner: %v", host.lspCalls)
+		}
+		name = "go.debug." + action
+		if err := host.commands[name](""); err != nil {
+			t.Fatal(err)
+		}
+		if host.debugCalls[len(host.debugCalls)-1] != action+" Go" {
+			t.Fatalf("wrong owner: %v", host.debugCalls)
+		}
+		if err := host.commands[name]("extra"); err == nil {
+			t.Fatalf("%s accepted extra arguments", name)
+		}
+	}
+	if err := host.commands["go.lsp.run"]("custom-gopls -debug localhost:0"); err != nil {
+		t.Fatal(err)
+	}
+	if host.lspProgram.Command != "custom-gopls" || len(host.lspProgram.Arguments) != 2 {
+		t.Fatalf("program=%+v", host.lspProgram)
+	}
+	if err := host.commands["go.debug.run"]("/tmp/go-debug-program"); err != nil {
+		t.Fatal(err)
+	}
+	if host.debugProgram != "/tmp/go-debug-program" || host.debugCalls[len(host.debugCalls)-1] != "launch Go" {
+		t.Fatalf("wrong debug launch: %v", host.debugCalls)
+	}
+	if err := host.commands["go.debug.run"](""); err != nil {
+		t.Fatal(err)
+	}
+	if host.prompt == nil {
+		t.Fatal("debug run did not prompt")
+	}
+	if err := host.prompt("/tmp/prompted-go-program"); err != nil {
+		t.Fatal(err)
+	}
+	if host.debugProgram != "/tmp/prompted-go-program" {
+		t.Fatal("prompt did not launch Go debugger")
+	}
+}
+
+func (h *testHost) OpenLocation(path string, _ plugin.Position) error { return h.OpenFile(path) }
+func (h *testHost) OpenDocuments() []plugin.Document                  { return []plugin.Document{h.CurrentDocument()} }
+func (h *testHost) RegisterGlobalCommand(name string, command plugin.Command) error {
+	return h.RegisterCommand(name, command)
+}
+func (h *testHost) RegisterBinding(string, string) error { return nil }

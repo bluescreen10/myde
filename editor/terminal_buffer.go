@@ -119,12 +119,7 @@ func (a *App) terminalSize() (int, int) {
 
 func (a *App) terminalSizeForShell(shell *shellBuffer) (int, int) {
 	width, height := a.screen.Size()
-	sidebarWidth := 0
-	if a.workspaceSearch != nil {
-		sidebarWidth = searchSidebarWidth(width)
-	} else if a.showFiles || a.sidebar != nil {
-		sidebarWidth = fileSidebarWidth(width)
-	}
+	sidebarWidth := a.sidebarWidth(width)
 	region := editorRegion{
 		x: sidebarWidth, y: 1, width: width - sidebarWidth, height: height - 2,
 	}
@@ -185,6 +180,9 @@ func (a *App) handleTerminalEvent(event terminal.Event, shell *shellBuffer) (boo
 }
 
 func terminalOwnsBinding(event terminal.Event) bool {
+	if (event.Control || event.Super) && (event.Key == terminal.KeyLeft || event.Key == terminal.KeyRight) {
+		return true
+	}
 	return event.Control && (event.Rune == 'c' || event.Rune == 'r')
 }
 
@@ -227,8 +225,14 @@ func terminalEventInput(event terminal.Event) ([]byte, bool) {
 	case terminal.KeyDown:
 		return []byte("\x1b[B"), true
 	case terminal.KeyRight:
+		if event.Control || event.Super {
+			return []byte{5}, true
+		}
 		return []byte("\x1b[C"), true
 	case terminal.KeyLeft:
+		if event.Control || event.Super {
+			return []byte{1}, true
+		}
 		return []byte("\x1b[D"), true
 	case terminal.KeyHome:
 		return []byte("\x1b[H"), true

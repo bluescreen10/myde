@@ -15,6 +15,6 @@ func platformBindings() map[string]string {
 		"ctrl-x":     "edit.cut",
 		"ctrl-y":     "edit.redo",
 		"ctrl-z":     "edit.undo",
-		"ctrl-s":      "file.save",
+		"ctrl-s":     "file.save",
 	}
 }

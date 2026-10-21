@@ -26,11 +26,25 @@ type Process struct {
 	pendingMu sync.Mutex
 	pending   map[int64]chan Message
 	events    chan Notification
+	done      chan struct{}
+	handler   func(string, json.RawMessage) (any, error)
+}
+
+// ProcessOptions configures the subprocess and handles server-to-client requests.
+type ProcessOptions struct {
+	Directory string
+	OnRequest func(string, json.RawMessage) (any, error)
 }
 
 // Start launches command with arguments.
 func Start(ctx context.Context, command string, arguments ...string) (*Process, error) {
+	return StartWithOptions(ctx, command, ProcessOptions{}, arguments...)
+}
+
+// StartWithOptions launches a JSON-RPC process with workspace context.
+func StartWithOptions(ctx context.Context, command string, options ProcessOptions, arguments ...string) (*Process, error) {
 	cmd := exec.CommandContext(ctx, command, arguments...)
+	cmd.Dir = options.Directory
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("open %s input: %w", command, err)
@@ -47,6 +61,8 @@ func Start(ctx context.Context, command string, arguments ...string) (*Process, 
 		stream:  NewStream(output, input),
 		pending: make(map[int64]chan Message),
 		events:  make(chan Notification, 64),
+		done:    make(chan struct{}),
+		handler: options.OnRequest,
 	}
 	go process.readMessages()
 	go func() {
@@ -72,22 +88,30 @@ func (p *Process) Request(ctx context.Context, method string, params any, result
 		p.removePending(id)
 		return err
 	}
+	var message Message
 	select {
 	case <-ctx.Done():
 		p.removePending(id)
 		return ctx.Err()
-	case message := <-response:
-		if len(message.Error) > 0 && string(message.Error) != "null" {
-			return fmt.Errorf("%s: %s", method, message.Error)
+	case <-p.done:
+		select {
+		case message = <-response:
+		default:
+			p.removePending(id)
+			return fmt.Errorf("%s: language server disconnected", method)
 		}
-		if result == nil || len(message.Result) == 0 {
-			return nil
-		}
-		if err := json.Unmarshal(message.Result, result); err != nil {
-			return fmt.Errorf("decode %s result: %w", method, err)
-		}
+	case message = <-response:
+	}
+	if len(message.Error) > 0 && string(message.Error) != "null" {
+		return fmt.Errorf("%s: %s", method, message.Error)
+	}
+	if result == nil || len(message.Result) == 0 {
 		return nil
 	}
+	if err := json.Unmarshal(message.Result, result); err != nil {
+		return fmt.Errorf("decode %s result: %w", method, err)
+	}
+	return nil
 }
 
 // Notify sends a JSON-RPC notification.
@@ -104,6 +128,16 @@ func (p *Process) Events() <-chan Notification {
 	return p.events
 }
 
+// Running reports whether the protocol connection is still open.
+func (p *Process) Running() bool {
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
+}
+
 // Close terminates the subprocess.
 func (p *Process) Close() error {
 	if p.command.Process == nil {
@@ -116,13 +150,33 @@ func (p *Process) Close() error {
 }
 
 func (p *Process) readMessages() {
+	defer close(p.done)
+	defer close(p.events)
 	for {
 		message, err := p.stream.Read()
 		if err != nil {
-			close(p.events)
 			return
 		}
 		if len(message.ID) > 0 {
+			if message.Method != "" {
+				response := map[string]any{"jsonrpc": "2.0", "id": message.ID}
+				var result any
+				var requestErr error
+				if p.handler != nil {
+					result, requestErr = p.handler(message.Method, message.Params)
+				} else {
+					requestErr = fmt.Errorf("unsupported client request: %s", message.Method)
+				}
+				if requestErr != nil {
+					response["error"] = map[string]any{"code": -32601, "message": requestErr.Error()}
+				} else {
+					response["result"] = result
+				}
+				if p.stream.Write(response) != nil {
+					return
+				}
+				continue
+			}
 			var id int64
 			if json.Unmarshal(message.ID, &id) == nil {
 				p.pendingMu.Lock()

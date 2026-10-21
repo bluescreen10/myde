@@ -48,48 +48,83 @@ type definitionTarget struct {
 }
 
 func (a *App) lspStart(arguments string) error {
+	mode := a.currentEditorBuffer().mode
 	if arguments == "" {
-		mode := a.modeForBuffer(a.current())
-		if mode.LanguageServer.Command != "" {
-			return a.startLanguageServer(mode.LanguageServer, a.currentEditorBuffer().mode)
+		if registered := a.modes[mode]; registered != nil && registered.languageServerProgram().Command != "" {
+			return a.StartLanguageServer(mode)
 		}
 		a.prompt("Language server command", func(command string) {
-			if err := a.lspStart(command); err != nil {
+			if err := a.runLanguageServerCommand(mode, command); err != nil {
 				a.message = err.Error()
 			}
 		})
 		return nil
 	}
+	return a.runLanguageServerCommand(mode, arguments)
+}
+
+func (a *App) runLanguageServerCommand(mode, arguments string) error {
 	command, commandArguments, err := splitCommand(arguments)
 	if err != nil {
 		return err
 	}
-	return a.startLanguageServer(plugin.Program{Command: command, Arguments: commandArguments}, a.currentEditorBuffer().mode)
+	return a.RunLanguageServer(mode, plugin.Program{Command: command, Arguments: commandArguments})
 }
 
-func (a *App) startLanguageServer(program plugin.Program, mode string) error {
+func (a *App) lspRestart(arguments string) error {
+	if arguments != "" {
+		return a.runLanguageServerCommand(a.currentEditorBuffer().mode, arguments)
+	}
+	return a.RestartLanguageServer(a.currentEditorBuffer().mode)
+}
+
+func (a *App) lspStop(arguments string) error {
+	if arguments == "" {
+		arguments = a.currentEditorBuffer().mode
+	}
+	return a.StopLanguageServer(arguments)
+}
+
+func languageServerRequest(root string, method string, params json.RawMessage) (any, error) {
+	switch method {
+	case "workspace/configuration":
+		var request struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		return make([]any, len(request.Items)), nil
+	case "workspace/workspaceFolders":
+		return []map[string]string{{"uri": fileURI(root), "name": filepath.Base(root)}}, nil
+	case "client/registerCapability", "client/unregisterCapability", "window/workDoneProgress/create", "window/showMessageRequest":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported client request: %s", method)
+	}
+}
+
+func (a *App) startLanguageServer(program plugin.Program, mode *editingMode) error {
 	command, err := exec.LookPath(program.Command)
 	if err != nil {
 		return fmt.Errorf("find %s: %w", program.Command, err)
 	}
-	if a.lspCancel != nil {
-		a.lspCancel()
-	}
-	a.lsp = nil
-	a.lspMode = ""
-	for _, current := range a.buffers {
-		current.lspOpened = false
-		current.diagnostics = nil
-	}
+	a.clearLanguageServer(mode)
 	ctx, cancel := context.WithCancel(context.Background())
-	server, err := protocol.Start(ctx, command, program.Arguments...)
+	server, err := protocol.StartWithOptions(ctx, command, protocol.ProcessOptions{
+		Directory: a.root,
+		OnRequest: func(method string, params json.RawMessage) (any, error) {
+			return languageServerRequest(a.root, method, params)
+		},
+	}, program.Arguments...)
 	if err != nil {
 		cancel()
 		return err
 	}
-	a.lsp = server
-	a.lspCancel = cancel
-	a.lspMode = mode
+	session := &languageServerSession{mode: mode, process: server, cancel: cancel}
+	mode.languageServer = session
+	mode.serverStopped = false
+	mode.serverProgram = plugin.Program{Command: program.Command, Arguments: append([]string(nil), program.Arguments...)}
 
 	requestContext, requestCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer requestCancel()
@@ -102,8 +137,9 @@ func (a *App) startLanguageServer(program plugin.Program, mode string) error {
 		} `json:"capabilities"`
 	}
 	err = server.Request(requestContext, "initialize", map[string]any{
-		"processId": nil,
-		"rootUri":   fileURI(a.root),
+		"processId":        nil,
+		"rootUri":          fileURI(a.root),
+		"workspaceFolders": []map[string]string{{"uri": fileURI(a.root), "name": filepath.Base(a.root)}},
 		"capabilities": map[string]any{
 			"textDocument": map[string]any{
 				"publishDiagnostics": map[string]any{},
@@ -121,42 +157,48 @@ func (a *App) startLanguageServer(program plugin.Program, mode string) error {
 		},
 	}, &initialized)
 	if err != nil {
-		cancel()
-		a.lsp = nil
-		a.lspMode = ""
+		a.clearLanguageServer(mode)
 		return err
 	}
-	a.lspSync = synchronizationKind(initialized.Capabilities.TextDocumentSync)
-	a.lspCompletionResolve = initialized.Capabilities.CompletionProvider.ResolveProvider
+	session.syncKind = synchronizationKind(initialized.Capabilities.TextDocumentSync)
+	session.completionResolve = initialized.Capabilities.CompletionProvider.ResolveProvider
 	if err := server.Notify("initialized", map[string]any{}); err != nil {
-		cancel()
-		a.lsp = nil
-		a.lspMode = ""
+		a.clearLanguageServer(mode)
 		return err
 	}
 	for _, current := range a.buffers {
-		a.notifyLSPDidOpen(current.text)
+		if current.mode == modeKey(mode.Name) {
+			a.notifyLSPDidOpen(current.text)
+		}
 	}
-	go a.readLSPEvents(server)
-	a.message = "language server started: " + command
+	go a.readLSPEvents(session)
+	a.message = mode.Name + " language server started: " + command
 	return nil
 }
 
 func (a *App) notifyLSPDidOpen(current *buffer.Buffer) {
 	editorBuffer := a.editorBufferFor(current)
-	if editorBuffer == nil || a.lsp == nil || current.Path() == "" || editorBuffer.mode != a.lspMode || editorBuffer.lspOpened {
+	session := a.languageServerForBuffer(current)
+	if editorBuffer == nil || session == nil || current.Path() == "" || editorBuffer.lsp == session && editorBuffer.lspURI == fileURI(current.Path()) {
 		return
 	}
+	if editorBuffer.lsp != nil {
+		a.notifyLSPDidClose(current)
+	}
 	mode := a.modeForBuffer(current)
-	_ = a.lsp.Notify("textDocument/didOpen", map[string]any{
-		"textDocument": map[string]any{
-			"uri":        fileURI(current.Path()),
-			"languageId": mode.LanguageID,
-			"version":    current.Revision(),
-			"text":       string(current.Bytes()),
-		},
+	languageID := mode.LanguageID
+	if languageID == "" {
+		languageID = mode.Syntax
+	}
+	err := session.process.Notify("textDocument/didOpen", map[string]any{
+		"textDocument": map[string]any{"uri": fileURI(current.Path()), "languageId": languageID, "version": current.Revision(), "text": string(current.Bytes())},
 	})
-	editorBuffer.lspOpened = true
+	if err != nil {
+		a.message = "open language server document: " + err.Error()
+		return
+	}
+	editorBuffer.lsp = session
+	editorBuffer.lspURI = fileURI(current.Path())
 }
 
 func (a *App) notifyLSPDidClose(current *buffer.Buffer) {
@@ -165,13 +207,14 @@ func (a *App) notifyLSPDidClose(current *buffer.Buffer) {
 		return
 	}
 	editorBuffer.diagnostics = nil
-	if a.lsp == nil || current.Path() == "" || !editorBuffer.lspOpened {
+	session := editorBuffer.lsp
+	uri := editorBuffer.lspURI
+	editorBuffer.lsp = nil
+	editorBuffer.lspURI = ""
+	if session == nil || uri == "" {
 		return
 	}
-	_ = a.lsp.Notify("textDocument/didClose", map[string]any{
-		"textDocument": map[string]any{"uri": fileURI(current.Path())},
-	})
-	editorBuffer.lspOpened = false
+	_ = session.process.Notify("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": uri}})
 }
 
 type textChange struct {
@@ -194,12 +237,13 @@ func newTextChange(current *buffer.Buffer, start, end buffer.Point, text string)
 }
 
 func (a *App) notifyLSPChanges(current *buffer.Buffer, changes []textChange) {
+	session := a.languageServerForBuffer(current)
 	editorBuffer := a.editorBufferFor(current)
-	if editorBuffer == nil || a.lsp == nil || current.Path() == "" || editorBuffer.mode != a.lspMode || !editorBuffer.lspOpened {
+	if editorBuffer == nil || session == nil || current.Path() == "" || editorBuffer.lsp != session {
 		return
 	}
 	contentChanges := []map[string]any{{"text": string(current.Bytes())}}
-	if a.lspSync == 2 {
+	if session.syncKind == 2 {
 		contentChanges = make([]map[string]any, 0, len(changes))
 		for _, change := range changes {
 			contentChanges = append(contentChanges, map[string]any{
@@ -211,7 +255,7 @@ func (a *App) notifyLSPChanges(current *buffer.Buffer, changes []textChange) {
 			})
 		}
 	}
-	_ = a.lsp.Notify("textDocument/didChange", map[string]any{
+	_ = session.process.Notify("textDocument/didChange", map[string]any{
 		"textDocument": map[string]any{
 			"uri":     fileURI(current.Path()),
 			"version": current.Revision(),
@@ -221,11 +265,12 @@ func (a *App) notifyLSPChanges(current *buffer.Buffer, changes []textChange) {
 }
 
 func (a *App) notifyLSPFullChange(current *buffer.Buffer) {
+	session := a.languageServerForBuffer(current)
 	editorBuffer := a.editorBufferFor(current)
-	if editorBuffer == nil || a.lsp == nil || current.Path() == "" || editorBuffer.mode != a.lspMode || !editorBuffer.lspOpened {
+	if editorBuffer == nil || session == nil || current.Path() == "" || editorBuffer.lsp != session {
 		return
 	}
-	_ = a.lsp.Notify("textDocument/didChange", map[string]any{
+	_ = session.process.Notify("textDocument/didChange", map[string]any{
 		"textDocument": map[string]any{
 			"uri":     fileURI(current.Path()),
 			"version": current.Revision(),
@@ -258,11 +303,12 @@ func protocolPosition(current *buffer.Buffer, point buffer.Point) textPosition {
 }
 
 func (a *App) requestLSPCompletion() {
-	if !a.hasLanguageServerForCurrentMode() || a.current().Path() == "" {
+	session := a.languageServerForBuffer(a.current())
+	if session == nil || a.current().Path() == "" {
 		return
 	}
 	a.completionEpoch++
-	server := a.lsp
+	server := session.process
 	current := a.current()
 	revision := current.Revision()
 	epoch := a.completionEpoch
@@ -278,6 +324,7 @@ func (a *App) requestLSPCompletion() {
 		}, &result)
 		if err != nil {
 			a.servers <- serverEvent{
+				lspSource:          session,
 				message:            "completion: " + err.Error(),
 				completionReady:    true,
 				completionBuffer:   current,
@@ -288,6 +335,7 @@ func (a *App) requestLSPCompletion() {
 			return
 		}
 		a.servers <- serverEvent{
+			lspSource:          session,
 			completions:        parseCompletions(result, current, point),
 			completionReady:    true,
 			completionBuffer:   current,
@@ -299,7 +347,8 @@ func (a *App) requestLSPCompletion() {
 }
 
 func (a *App) resolveSelectedCompletion() {
-	if !a.lspCompletionResolve || a.palette == nil || !a.palette.completion ||
+	session := a.languageServerForBuffer(a.current())
+	if session == nil || !session.completionResolve || a.palette == nil || !a.palette.completion ||
 		a.palette.completionPending || len(a.palette.filtered) == 0 {
 		return
 	}
@@ -310,7 +359,7 @@ func (a *App) resolveSelectedCompletion() {
 	markCompletionResolved(a.palette.items, item.value)
 	markCompletionResolved(a.palette.filtered, item.value)
 
-	server := a.lsp
+	server := session.process
 	current := a.current()
 	details := completionDetails{
 		buffer:   current,
@@ -327,7 +376,7 @@ func (a *App) resolveSelectedCompletion() {
 		}
 		details.detail = resolved.Detail
 		details.documentation = completionDocumentation(resolved.Documentation)
-		a.servers <- serverEvent{completionDetails: &details}
+		a.servers <- serverEvent{lspSource: session, completionDetails: &details}
 	}()
 }
 
@@ -363,14 +412,16 @@ func updateCompletionDetails(items []paletteItem, details completionDetails) {
 }
 
 func (a *App) requestLSPDefinition(arguments string) error {
-	if !a.hasLanguageServerForCurrentMode() {
-		return fmt.Errorf("no language server is running")
+	a.activateCurrentMode()
+	session := a.languageServerForBuffer(a.current())
+	if session == nil {
+		return fmt.Errorf("no language server is running; use lsp.restart")
 	}
 	current := a.current()
 	if current.Path() == "" {
 		return fmt.Errorf("save the buffer before requesting a definition")
 	}
-	server := a.lsp
+	server := session.process
 	point := current.Cursors()[0].Point
 	position := protocolPosition(current, point)
 	go func() {
@@ -382,20 +433,22 @@ func (a *App) requestLSPDefinition(arguments string) error {
 			"position":     map[string]any{"line": position.line, "character": position.character},
 		}, &result)
 		if err != nil {
-			a.servers <- serverEvent{message: "definition: " + err.Error()}
+			a.servers <- serverEvent{lspSource: session, message: "definition: " + err.Error()}
 			return
 		}
 		target, ok := parseDefinition(result)
 		if !ok {
-			a.servers <- serverEvent{message: "definition not found"}
+			a.servers <- serverEvent{lspSource: session, message: "definition not found"}
 			return
 		}
-		a.servers <- serverEvent{definition: &target}
+		a.servers <- serverEvent{lspSource: session, definition: &target}
 	}()
 	return nil
 }
 
-func (a *App) readLSPEvents(server *protocol.Process) {
+func (a *App) readLSPEvents(session *languageServerSession) {
+	server := session.process
+	defer func() { a.servers <- serverEvent{lspStopped: session} }()
 	for event := range server.Events() {
 		if event.Method != "textDocument/publishDiagnostics" {
 			continue
@@ -436,7 +489,7 @@ func (a *App) readLSPEvents(server *protocol.Process) {
 				message:   item.Message,
 			})
 		}
-		a.servers <- serverEvent{path: path, diagnostics: diagnostics}
+		a.servers <- serverEvent{lspSource: session, path: path, diagnostics: diagnostics}
 	}
 }
 

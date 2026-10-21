@@ -11,6 +11,7 @@ import (
 	"github.com/bluescreen10/myde/editor"
 	gitplugin "github.com/bluescreen10/myde/plugins/git"
 	golangplugin "github.com/bluescreen10/myde/plugins/golang"
+	searchplugin "github.com/bluescreen10/myde/plugins/search"
 	"github.com/bluescreen10/myde/settings"
 	"github.com/bluescreen10/myde/terminal"
 )
@@ -58,7 +59,7 @@ func run() (runErr error) {
 	defer stopSignals()
 
 	app, err := editor.NewWithSettings(
-		root, paths, session, os.Stdin, os.Stdout, userSettings, gitplugin.New(), golangplugin.New(),
+		root, paths, session, os.Stdin, os.Stdout, userSettings, gitplugin.New(), golangplugin.New(), searchplugin.New(),
 	)
 	if err != nil {
 		return err

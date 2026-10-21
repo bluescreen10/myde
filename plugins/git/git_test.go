@@ -1,7 +1,6 @@
 package git_test
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 )
 
 type testHost struct {
+	openedPath  string
 	root        string
 	currentPath string
 	commands    map[string]plugin.Command
@@ -201,8 +201,8 @@ func TestPluginStagesDiffsUnstagesAndCommits(t *testing.T) {
 	if err := changes.OnAction(ui.Activate, staged); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(host.bufferName, ".diff") || !bytes.Contains(host.buffer, []byte("+func main() {}")) {
-		t.Fatalf("diff buffer = %q %q", host.bufferName, host.buffer)
+	if host.openedPath != "main.go" {
+		t.Fatalf("opened file = %q", host.openedPath)
 	}
 
 	if err := host.commands["git.stage"]("main.go"); err != nil {
@@ -364,3 +364,22 @@ func runGit(t *testing.T, root string, arguments ...string) string {
 	}
 	return string(output)
 }
+
+func (h *testHost) OpenFile(path string) error                     { h.openedPath = path; return nil }
+func (h *testHost) StartLanguageServer(string) error               { return nil }
+func (h *testHost) RunLanguageServer(string, plugin.Program) error { return nil }
+func (h *testHost) StopLanguageServer(string) error                { return nil }
+func (h *testHost) RestartLanguageServer(string) error             { return nil }
+
+func (h *testHost) StartDebugAdapter(string) error                    { return nil }
+func (h *testHost) RunDebugAdapter(string, plugin.DebugAdapter) error { return nil }
+func (h *testHost) StopDebugAdapter(string) error                     { return nil }
+func (h *testHost) RestartDebugAdapter(string) error                  { return nil }
+func (h *testHost) LaunchDebugProgram(string, string) error           { return nil }
+
+func (h *testHost) OpenLocation(path string, _ plugin.Position) error { return h.OpenFile(path) }
+func (h *testHost) OpenDocuments() []plugin.Document                  { return []plugin.Document{h.CurrentDocument()} }
+func (h *testHost) RegisterGlobalCommand(name string, command plugin.Command) error {
+	return h.RegisterCommand(name, command)
+}
+func (h *testHost) RegisterBinding(string, string) error { return nil }

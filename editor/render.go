@@ -33,6 +33,7 @@ func (a *App) render() error {
 	activeView := a.currentView()
 	if activeView != nil {
 		a.renderView(activeView, statusRow)
+		sidebarWidth = a.sidebarWidth(width)
 	} else {
 		sidebarWidth = a.renderSidebar(statusRow)
 		if a.tileRoot != nil {
@@ -73,29 +74,41 @@ func (a *App) render() error {
 		inputX := left + 2 + prefixWidth
 		countX := left + panelWidth - displayWidth(count) - 2
 		queryWidth := max(0, countX-inputX-1)
-		cursorX = inputX + min(queryWidth, displayWidth(string(a.palette.query)))
+		_, offset := inputViewport(a.palette.query, a.palette.cursor, queryWidth)
+		cursorX = inputX + offset
 		cursorY = top + 1
 	}
 	if a.minibuffer != nil {
 		promptWidth := displayWidth(a.minibuffer.title + ": ")
-		cursorX = min(width-1, promptWidth+displayWidth(string(a.minibuffer.query)))
+		_, offset := inputViewport(a.minibuffer.query, a.minibuffer.cursor, width-promptWidth)
+		cursorX = min(width-1, promptWidth+offset)
 		cursorY = height - 1
 	}
 	if a.palette == nil && a.minibuffer == nil && a.showFiles && a.browser.focused {
-		cursorX = min(sidebarWidth-2, 3+displayWidth(string(a.browser.query)))
+		_, offset := inputViewport(a.browser.query, a.browser.cursor, sidebarWidth-5)
+		cursorX = 3 + offset
 		cursorY = 2
 	}
 	if a.palette == nil && a.minibuffer == nil && a.sidebar != nil {
 		cursorX = 2
-		cursorY = 2 + a.sidebar.selected - a.sidebar.top
-	}
-	if a.palette == nil && a.minibuffer == nil && a.workspaceSearch != nil {
-		visibleQuery := trailingDisplayText(a.workspaceSearch.query, max(0, sidebarWidth-5))
-		cursorX = min(sidebarWidth-2, 3+displayWidth(visibleQuery))
-		cursorY = 2
+		cursorY = a.sidebar.contentTop() + a.sidebar.selected - a.sidebar.top
+		if a.sidebar.input != nil {
+			_, offset := inputViewport(a.sidebar.query, a.sidebar.cursor, sidebarWidth-5)
+			cursorX = 3 + offset
+			cursorY = 2
+		}
 	}
 	softwareCursors := a.usesSoftwareCursors()
-	hideCursor := softwareCursors || (activeView != nil && a.palette == nil && a.minibuffer == nil)
+	hideCursor := softwareCursors || (activeView != nil && a.sidebar == nil && a.palette == nil && a.minibuffer == nil)
+	if activeView != nil && a.sidebar == nil && a.palette == nil && a.minibuffer == nil && activeView.focus < len(activeView.panes) {
+		pane := activeView.panes[activeView.focus]
+		if pane.list != nil && pane.list.input != nil {
+			bounds := a.viewBounds(activeView, statusRow)[activeView.focus]
+			_, offset := inputViewport(pane.list.query, pane.list.cursor, bounds.width-5)
+			cursorX, cursorY = bounds.left+3+offset, bounds.top+1
+			hideCursor = false
+		}
+	}
 	a.screen.SetCursorVisible(!hideCursor)
 	if softwareCursors && a.cursorBlinkOn {
 		a.renderSoftwareCursors(sidebarWidth, statusRow)
@@ -134,9 +147,6 @@ func (a *App) renderTabs(width int) {
 }
 
 func (a *App) renderSidebar(statusRow int) int {
-	if a.workspaceSearch != nil {
-		return a.renderWorkspaceSearch(statusRow)
-	}
 	if a.sidebar != nil {
 		return a.renderPluginSidebar(statusRow)
 	}
@@ -145,7 +155,7 @@ func (a *App) renderSidebar(statusRow int) int {
 
 func (a *App) renderPluginSidebar(statusRow int) int {
 	width, _ := a.screen.Size()
-	sidebarWidth := fileSidebarWidth(width)
+	sidebarWidth := a.sidebarWidth(width)
 	panelHeight := statusRow - 1
 	if panelHeight < 2 {
 		return sidebarWidth
@@ -160,12 +170,27 @@ func (a *App) renderPluginSidebar(statusRow int) int {
 		return sidebarWidth
 	}
 
-	rows := max(0, panelHeight-4)
+	contentTop := a.sidebar.contentTop()
+	if a.sidebar.input != nil {
+		a.screen.Text(1, 2, "› ", accent)
+		text, _ := inputViewport(a.sidebar.query, a.sidebar.cursor, sidebarWidth-5)
+		style := panelStyle
+		if len(a.sidebar.query) == 0 {
+			text = truncate(a.sidebar.input.Placeholder, sidebarWidth-5)
+			style = border
+		}
+		a.screen.Text(3, 2, text, style)
+		a.drawPanelSeparator(0, 3, sidebarWidth, border)
+	}
+	rows := max(0, panelHeight-2-contentTop)
+	if len(a.sidebar.rows) == 0 && a.sidebar.message != "" {
+		a.screen.Text(2, contentTop, truncate(a.sidebar.message, sidebarWidth-4), border)
+	}
 	a.sidebar.ensureVisible(rows)
 	for row := 0; row < rows && a.sidebar.top+row < len(a.sidebar.rows); row++ {
 		index := a.sidebar.top + row
 		entry := a.sidebar.rows[index]
-		y := 2 + row
+		y := contentTop + row
 		if !entry.set {
 			style := border
 			if len(entry.title) > 0 && entry.title[0] != ' ' {
@@ -241,7 +266,8 @@ func (a *App) renderFiles(statusRow int) int {
 		placeholder := border
 		a.screen.Text(3, 2, truncate("type to filter…", sidebarWidth-5), placeholder)
 	} else {
-		a.screen.Text(3, 2, truncate(string(a.browser.query), sidebarWidth-5), panel)
+		text, _ := inputViewport(a.browser.query, a.browser.cursor, sidebarWidth-5)
+		a.screen.Text(3, 2, text, panel)
 	}
 	a.drawPanelSeparator(0, 3, sidebarWidth, border)
 
@@ -303,11 +329,6 @@ func (a *App) renderFiles(statusRow int) int {
 
 func fileSidebarWidth(width int) int {
 	sidebarWidth := min(42, max(24, width/3))
-	return min(sidebarWidth, max(12, width-20))
-}
-
-func searchSidebarWidth(width int) int {
-	sidebarWidth := min(72, max(36, width/2))
 	return min(sidebarWidth, max(12, width-20))
 }
 
@@ -604,7 +625,8 @@ func (a *App) renderPalette(width, statusRow int) {
 	countX := left + panelWidth - displayWidth(count) - 2
 	queryWidth := max(0, countX-inputX-1)
 	a.screen.Text(left+2, top+1, prefix, panel)
-	a.screen.Text(inputX, top+1, truncate(string(p.query), queryWidth), panel)
+	text, _ := inputViewport(p.query, p.cursor, queryWidth)
+	a.screen.Text(inputX, top+1, text, panel)
 	a.screen.Text(countX, top+1, count, helpText)
 	a.drawPanelSeparator(left, top+2, panelWidth, border)
 
@@ -773,7 +795,8 @@ func (a *App) renderMinibuffer(width, row int) {
 	heading.Bold = true
 	a.screen.Text(0, row, a.minibuffer.title+": ", heading)
 	x := displayWidth(a.minibuffer.title + ": ")
-	a.screen.Text(x, row, string(a.minibuffer.query), style)
+	text, _ := inputViewport(a.minibuffer.query, a.minibuffer.cursor, width-x)
+	a.screen.Text(x, row, text, style)
 }
 
 func paletteBounds(width, statusRow int) (int, int, int, int) {
@@ -946,7 +969,7 @@ func (a *App) bufferPointPositionInRegion(
 }
 
 func (a *App) usesSoftwareCursors() bool {
-	if len(a.current().Cursors()) < 2 || a.minibuffer != nil || a.sidebar != nil || a.workspaceSearch != nil {
+	if len(a.current().Cursors()) < 2 || a.minibuffer != nil || a.sidebar != nil {
 		return false
 	}
 	if a.palette != nil && !a.palette.completion {

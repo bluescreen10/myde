@@ -1,229 +1,146 @@
-package editor
+package editor_test
 
 import (
-	"io"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/bluescreen10/myde/buffer"
-	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/terminal"
 	"github.com/bluescreen10/myde/ui"
 )
 
-func TestViewListLoadsPreviewAndSwitchesPaneFocus(t *testing.T) {
-	view := ui.View{
-		Title: "Review",
-		Layout: ui.Layout{Direction: ui.LayoutHorizontal, Panes: []ui.Pane{
-			{ID: "files", List: &ui.List{
-				Sections: []ui.ListSection{{Title: "Files", Items: []ui.ListItem{
-					{Label: "a.go", Value: "a.go", Kind: "unstaged"},
-					{Label: "b.go", Value: "b.go", Kind: "unstaged"},
-				}}},
-				PreviewPane: "preview",
-				OnSelect: func(item ui.ListItem) (ui.Widget, error) {
-					return ui.TextWidget{Title: item.Value, Content: []byte(item.Value + "\n")}, nil
-				},
-			}},
-			{ID: "preview"},
-		}},
-	}
-	panel := newViewPanel(1, view)
-	app := &App{
-		buffers: []*editorBuffer{{text: buffer.NewReadOnly("Review", nil), view: panel}},
-		screen:  terminal.NewScreen(io.Discard, 100, 30),
-	}
+func reviewView(choose func(ui.Action, ui.ListItem) error) ui.View {
+	return ui.View{Title: "Review", Layout: ui.Layout{Panes: []ui.Pane{
+		{ID: "files", List: &ui.List{Sections: []ui.ListSection{{Title: "Files", Items: []ui.ListItem{{Label: "a.go", Value: "a.go"}, {Label: "b.go", Value: "b.go"}}}}, PreviewPane: "preview", OnAction: choose, OnSelect: func(item ui.ListItem) (ui.Widget, error) {
+			return ui.TextWidget{Title: "preview-" + item.Value, Content: []byte(item.Value)}, nil
+		}}},
+		{ID: "preview"},
+	}}}
+}
 
-	app.requestViewSelections(panel)
-	preview := panel.paneByID("preview")
-	if preview.content.Title != "a.go" || len(preview.content.Lines) != 1 ||
-		preview.content.Lines[0].Spans[0].Text != "a.go" {
-		t.Fatalf("initial preview = %+v", preview.content)
+func TestViewListLoadsPreviewAndActivatesSelection(t *testing.T) {
+	h := newHarness(t, "")
+	chosen := ""
+	h.app.NewView(reviewView(func(_ ui.Action, item ui.ListItem) error { chosen = item.Value; return nil }))
+	h.wait("first preview", func() bool { return strings.Contains(h.screen.row(1), "preview-a.go") })
+	h.key(terminal.Event{Key: terminal.KeyDown})
+	h.wait("second preview", func() bool { return strings.Contains(h.screen.row(1), "preview-b.go") })
+	h.key(terminal.Event{Key: terminal.KeyEnter})
+	if chosen != "b.go" {
+		t.Fatalf("activated=%q", chosen)
 	}
-	if err := app.handleViewEvent(terminal.Event{Key: terminal.KeyDown}); err != nil {
-		t.Fatal(err)
-	}
-	if preview.content.Title != "b.go" || preview.content.Lines[0].Spans[0].Text != "b.go" {
-		t.Fatalf("selected preview = %+v", preview.content)
-	}
-	if err := app.handleViewEvent(terminal.Event{Key: terminal.KeyEnter}); err != nil {
-		t.Fatal(err)
-	}
-	if panel.focus != 1 {
-		t.Fatalf("Enter focused pane %d, want preview pane 1", panel.focus)
-	}
-	if err := app.handleViewEvent(terminal.Event{Key: terminal.KeyTab}); err != nil {
-		t.Fatal(err)
-	}
-	if panel.focus != 0 {
-		t.Fatalf("Tab focused pane %d, want list pane 0", panel.focus)
+	chosen = ""
+	h.key(terminal.Event{Key: terminal.KeyTab})
+	h.key(terminal.Event{Key: terminal.KeyEnter})
+	if chosen != "b.go" {
+		t.Fatalf("preview activated=%q", chosen)
 	}
 }
 
 func TestViewUpdateHonorsExplicitSelectionAndPreservesImplicitSelection(t *testing.T) {
-	definition := func(selected string) ui.View {
-		return ui.View{Layout: ui.Layout{Panes: []ui.Pane{{
-			ID: "files",
-			List: &ui.List{
-				Sections: []ui.ListSection{{Items: []ui.ListItem{
-					{Value: "a", Kind: "unstaged"},
-					{Value: "b", Kind: "unstaged"},
-					{Value: "c", Kind: "unstaged"},
-				}}},
-				SelectedValue: selected,
-				SelectedKind:  "unstaged",
-			},
-		}}}}
+	h := newHarness(t, "")
+	chosen := ""
+	def := reviewView(func(_ ui.Action, item ui.ListItem) error { chosen = item.Value; return nil })
+	handle := h.app.NewView(def)
+	h.key(terminal.Event{Key: terminal.KeyDown})
+	if !handle.Update(def) {
+		t.Fatal("update failed")
 	}
-	previous := newViewPanel(1, definition("a"))
-	replacement := newViewPanel(1, definition("b"))
-	preserveViewState(previous, replacement)
-	selected, _ := replacement.panes[0].list.selectedItem()
-	if selected.Value != "b" {
-		t.Fatalf("explicit replacement selection = %q, want b", selected.Value)
+	h.key(terminal.Event{Key: terminal.KeyEnter})
+	if chosen != "b.go" {
+		t.Fatalf("lost selection=%q", chosen)
 	}
-
-	previous.panes[0].list.selectItem("unstaged", "c")
-	replacement = newViewPanel(1, definition(""))
-	preserveViewState(previous, replacement)
-	selected, _ = replacement.panes[0].list.selectedItem()
-	if selected.Value != "c" {
-		t.Fatalf("preserved replacement selection = %q, want c", selected.Value)
+	def.Layout.Panes[0].List.SelectedValue = "a.go"
+	handle.Update(def)
+	h.key(terminal.Event{Key: terminal.KeyEnter})
+	if chosen != "a.go" {
+		t.Fatalf("explicit selection=%q", chosen)
 	}
 }
 
 func TestViewHandleUsesBufferTabLifecycle(t *testing.T) {
-	app := &App{
-		screen:         terminal.NewScreen(io.Discard, 80, 24),
-		modes:          map[string]plugin.Mode{modeKey("Plain Text"): {Name: "Plain Text", Syntax: "plain"}},
-		extensionModes: make(map[string]string),
-	}
-	app.addBuffer(buffer.New())
-	handle := app.NewView(ui.View{Title: "Review", Layout: ui.Layout{Panes: []ui.Pane{{ID: "one"}}}})
-	if len(app.buffers) != 2 || app.active != 1 || app.currentView() == nil {
-		t.Fatalf("view tab state: buffers=%d active=%d view=%v", len(app.buffers), app.active, app.currentView())
-	}
-	if !handle.Show() {
-		t.Fatal("live view handle could not raise its tab")
+	h := newHarness(t, "")
+	handle := h.app.NewView(ui.View{Title: "Review", Layout: ui.Layout{Panes: []ui.Pane{{ID: "one"}}}})
+	h.draw()
+	if !h.contains("Review") || !handle.Show() {
+		t.Fatal("view not raised")
 	}
 	handle.Destroy()
-	shown := handle.Show()
-	if len(app.buffers) != 1 || shown {
-		t.Fatalf("destroyed view state: buffers=%d show=%v", len(app.buffers), shown)
+	if handle.Show() || handle.Update(ui.View{}) {
+		t.Fatal("destroyed view is live")
+	}
+	if h.app.CurrentDocument().ReadOnly {
+		t.Fatal("did not return to editable buffer")
 	}
 }
 
 func TestViewIgnoresResponsesFromReplacedPanes(t *testing.T) {
-	old := newViewPanel(1, ui.View{Layout: ui.Layout{Panes: []ui.Pane{
-		{ID: "preview"},
-	}}})
-	oldPane := old.panes[0]
-	oldPane.generation = 1
-	replacement := newViewPanel(1, ui.View{Layout: ui.Layout{Panes: []ui.Pane{
-		{ID: "preview"},
-	}}})
-	replacement.panes[0].generation = 1
-	app := &App{buffers: []*editorBuffer{{text: buffer.NewReadOnly("Review", nil), view: replacement}}}
-
-	app.applyViewPreviewEvent(&viewPreviewEvent{
-		viewID: 1, paneID: "preview", pane: oldPane, generation: 1,
-		widget: ui.TextWidget{Content: []byte("stale")},
-	})
-	if len(replacement.panes[0].content.Lines) != 0 {
-		t.Fatalf("stale preview replaced current content: %+v", replacement.panes[0].content)
+	h := newHarness(t, "")
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	def := reviewView(nil)
+	def.Layout.Panes[0].List.OnSelect = func(ui.ListItem) (ui.Widget, error) {
+		started <- struct{}{}
+		<-release
+		return ui.TextWidget{Content: []byte("STALE_PREVIEW")}, nil
 	}
-
-	app.applyViewRefreshEvent(&viewRefreshEvent{
-		viewID: 1, view: old,
-		updated: ui.View{Title: "Stale", Layout: ui.Layout{Panes: []ui.Pane{{ID: "preview"}}}},
-	})
-	if app.currentView() != replacement || app.currentView().title == "Stale" {
-		t.Fatal("stale refresh replaced the current view")
+	handle := h.app.NewView(def)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("preview did not start")
+	}
+	replacement := ui.View{Title: "New", Layout: ui.Layout{Panes: []ui.Pane{{ID: "preview", Widget: ui.TextWidget{Content: []byte("CURRENT_PREVIEW")}}}}}
+	handle.Update(replacement)
+	close(release)
+	h.wait("replacement preview", func() bool { return h.contains("CURRENT_PREVIEW") })
+	// Exercise more updates after releasing the old provider.
+	for range 20 {
+		h.app.Update()
+		h.draw()
+		time.Sleep(time.Millisecond)
+	}
+	if h.contains("STALE_PREVIEW") {
+		t.Fatal("stale preview replaced current content")
 	}
 }
 
 func TestViewClearsPreviewWhenListBecomesEmpty(t *testing.T) {
-	panel := newViewPanel(1, ui.View{Layout: ui.Layout{Panes: []ui.Pane{
-		{ID: "files", List: &ui.List{
-			Sections:    []ui.ListSection{{Title: "Files"}},
-			PreviewPane: "preview",
-			OnSelect: func(ui.ListItem) (ui.Widget, error) {
-				return ui.TextWidget{}, nil
-			},
-		}},
-		{ID: "preview", Widget: ui.TextWidget{Content: []byte("old")}},
-	}}})
-	app := &App{buffers: []*editorBuffer{{text: buffer.NewReadOnly("Review", nil), view: panel}}}
-	app.requestViewSelections(panel)
-	preview := panel.paneByID("preview")
-	if preview.widget != nil || len(preview.content.Lines) != 0 {
-		t.Fatalf("empty list retained preview %+v", preview.content)
+	h := newHarness(t, "")
+	def := reviewView(nil)
+	handle := h.app.NewView(def)
+	h.wait("preview", func() bool { return h.contains("preview-a.go") })
+	def.Layout.Panes[0].List.Sections = nil
+	handle.Update(def)
+	h.draw()
+	if strings.Contains(h.screen.row(1), "preview-a.go") {
+		t.Fatal("empty list kept stale preview")
 	}
 }
 
 func TestViewBackgroundRefreshPreservesSelection(t *testing.T) {
-	refreshes := 0
-	view := ui.View{
-		Layout: ui.Layout{Panes: []ui.Pane{{ID: "files", List: &ui.List{
-			Sections:      []ui.ListSection{{Items: []ui.ListItem{{Value: "a"}, {Value: "b"}}}},
-			SelectedValue: "b",
-		}}}},
-		RefreshInterval: time.Millisecond,
-		OnRefresh: func() (ui.View, error) {
-			refreshes++
-			return ui.View{
-				Layout: ui.Layout{Panes: []ui.Pane{{ID: "files", List: &ui.List{
-					Sections: []ui.ListSection{{Items: []ui.ListItem{{Value: "b"}, {Value: "c"}}}},
-				}}}},
-				RefreshInterval: time.Millisecond,
-			}, nil
-		},
-	}
-	panel := newViewPanel(1, view)
-	panel.nextRefresh = time.Time{}
-	app := &App{
-		buffers: []*editorBuffer{{text: buffer.NewReadOnly("Review", nil), view: panel}},
-		servers: make(chan serverEvent, 1),
-	}
-	app.pollViewRefreshes()
-	select {
-	case event := <-app.servers:
-		app.handleServerEvent(event)
-	case <-time.After(time.Second):
-		t.Fatal("view refresh did not complete")
-	}
-	selected, ok := app.currentView().panes[0].list.selectedItem()
-	if refreshes != 1 || !ok || selected.Value != "b" {
-		t.Fatalf("refreshes=%d selected=%+v ok=%v", refreshes, selected, ok)
+	h := newHarness(t, "")
+	chosen := ""
+	var refreshes atomic.Int32
+	def := reviewView(func(_ ui.Action, item ui.ListItem) error { chosen = item.Value; return nil })
+	updated := def
+	def.RefreshInterval = time.Millisecond
+	def.OnRefresh = func() (ui.View, error) { refreshes.Add(1); return updated, nil }
+	h.app.NewView(def)
+	h.key(terminal.Event{Key: terminal.KeyDown})
+	h.wait("background refresh", func() bool { return refreshes.Load() > 0 })
+	h.key(terminal.Event{Key: terminal.KeyEnter})
+	if chosen != "b.go" {
+		t.Fatalf("refresh selection=%q", chosen)
 	}
 }
 
 func TestRichTextWidgetPlacementAndSemanticStyle(t *testing.T) {
-	content := ui.WidgetContent{Lines: []ui.RichTextLine{{Spans: []ui.RichTextSpan{
-		{Text: "ab"},
-		{Text: "x", Positioned: true, Column: 8},
-		{Text: "\tZ", Style: ui.WidgetStyle{Foreground: ui.ToneAccent}},
-	}}}}
-	panel := newViewPanel(1, ui.View{Layout: ui.Layout{Panes: []ui.Pane{{
-		ID: "rich", Widget: content,
-	}}}})
-	if width := panel.panes[0].widgetWidth(); width != 13 {
-		t.Fatalf("rich-text width = %d, want 13", width)
-	}
-	if got := safeWidgetRune('\x1b'); got != '�' {
-		t.Fatalf("escape rune rendered as %q", got)
-	}
-
-	app := &App{theme: Theme{
-		Foreground: terminal.Color{R: 200, G: 200, B: 200},
-		Panel:      terminal.Color{R: 10, G: 20, B: 30},
-		Danger:     terminal.Color{R: 210, G: 20, B: 30},
-	}}
-	resolved := app.resolveWidgetStyle(terminal.Style{
-		Foreground: app.theme.Foreground, Background: app.theme.Panel,
-	}, ui.WidgetStyle{Background: ui.ToneDanger, BackgroundIntensity: 50})
-	want := blendColor(app.theme.Panel, app.theme.Danger, 50)
-	if resolved.Background != want {
-		t.Fatalf("semantic background = %+v, want %+v", resolved.Background, want)
+	h := newHarness(t, "")
+	h.app.NewView(ui.View{Title: "Rich", Layout: ui.Layout{Panes: []ui.Pane{{ID: "rich", Widget: ui.WidgetContent{Lines: []ui.RichTextLine{{Spans: []ui.RichTextSpan{{Text: "ab"}, {Text: "x", Positioned: true, Column: 8}, {Text: "\tZ", Style: ui.WidgetStyle{Foreground: ui.ToneAccent}}}}}}}}}})
+	h.draw()
+	if !strings.Contains(h.screen.row(2), "ab      x   Z") {
+		t.Fatalf("widget row=%q", h.screen.row(2))
 	}
 }

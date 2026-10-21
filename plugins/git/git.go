@@ -195,7 +195,7 @@ func (g *gitPlugin) handleStageAction(action ui.Action, item ui.ListItem) error 
 		}
 		g.host.SetMessage("unstaged " + item.Value)
 	case ui.Activate:
-		return g.openDiff(item.Kind == stagedKind, item.Value, item.Data == "??")
+		return g.host.OpenFile(item.Value)
 	}
 	return nil
 }

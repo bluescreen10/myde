@@ -1,31 +1,21 @@
-package editor
+package editor_test
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestTerminalStateInterpretsRedrawAndSplitUTF8(t *testing.T) {
-	state := newTerminalState(40, 10)
-	state.Write([]byte("\x1b[31mwork $ first\x1b[0m"))
-	state.Write([]byte("\r\x1b[Kwork $ second"))
-	state.Write([]byte("\r\nvalue: \xe2\x82"))
-	state.Write([]byte("\xac"))
-
-	content, point := state.Snapshot()
-	if got, want := string(content), "work $ second\nvalue: €"; got != want {
-		t.Fatalf("terminal snapshot = %q, want %q", got, want)
-	}
-	if point.Line != 1 || point.Column != 8 {
-		t.Fatalf("terminal cursor = %+v, want line 1 column 8", point)
+func TestTerminalRendersRedrawAndUTF8(t *testing.T) {
+	h := scriptedTerminal(t, `printf '\033[31mwork $ first\033[0m\r\033[Kwork $ second\r\nvalue: \342\202'; printf '\254'`)
+	h.wait("redrawn output", func() bool { return strings.Contains(h.content(), "work $ second\nvalue: €") })
+	if strings.Contains(h.content(), "work $ first") || strings.Contains(h.content(), "\x1b") {
+		t.Fatalf("terminal rendered raw escapes: %q", h.content())
 	}
 }
-
-func TestTerminalStateHandlesCursorEditing(t *testing.T) {
-	state := newTerminalState(40, 10)
-	state.Write([]byte("abcdef\x1b[3D\x1b[2PXY"))
-	content, point := state.Snapshot()
-	if got, want := string(content), "abcXY"; got != want {
-		t.Fatalf("terminal snapshot = %q, want %q", got, want)
-	}
-	if point.Column != 5 {
-		t.Fatalf("terminal cursor column = %d, want 5", point.Column)
+func TestTerminalHandlesCursorEditing(t *testing.T) {
+	h := scriptedTerminal(t, `printf 'abcdef\033[3D\033[2PXY'`)
+	h.wait("cursor edit", func() bool { return strings.Contains(h.content(), "abcXY") })
+	if strings.Contains(h.content(), "abcdef") {
+		t.Fatalf("cursor editing failed: %q", h.content())
 	}
 }

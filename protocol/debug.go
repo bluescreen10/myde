@@ -23,6 +23,7 @@ type DebugProcess struct {
 	pendingMu    sync.Mutex
 	pending      map[int64]chan Message
 	events       chan Notification
+	done         chan struct{}
 }
 
 // StartDebugReverse launches a debug adapter that connects back to a local TCP listener.
@@ -78,6 +79,7 @@ func newDebugProcess(command *exec.Cmd, reader io.Reader, writer io.Writer) *Deb
 		stream:  NewStream(reader, writer),
 		pending: make(map[int64]chan Message),
 		events:  make(chan Notification, 64),
+		done:    make(chan struct{}),
 	}
 	if closer, ok := reader.(io.Closer); ok {
 		process.closer = closer
@@ -106,21 +108,29 @@ func (p *DebugProcess) Request(ctx context.Context, command string, arguments an
 		p.removePending(sequence)
 		return err
 	}
+	var message Message
 	select {
 	case <-ctx.Done():
 		p.removePending(sequence)
 		return ctx.Err()
-	case message := <-response:
-		if !message.Success {
-			return fmt.Errorf("debug adapter rejected %s", command)
+	case <-p.done:
+		select {
+		case message = <-response:
+		default:
+			p.removePending(sequence)
+			return fmt.Errorf("debug adapter disconnected during %s", command)
 		}
-		if body != nil && len(message.Body) > 0 {
-			if err := json.Unmarshal(message.Body, body); err != nil {
-				return fmt.Errorf("decode %s response: %w", command, err)
-			}
-		}
-		return nil
+	case message = <-response:
 	}
+	if !message.Success {
+		return fmt.Errorf("debug adapter rejected %s", command)
+	}
+	if body != nil && len(message.Body) > 0 {
+		if err := json.Unmarshal(message.Body, body); err != nil {
+			return fmt.Errorf("decode %s response: %w", command, err)
+		}
+	}
+	return nil
 }
 
 func (p *DebugProcess) removePending(sequence int64) {
@@ -132,6 +142,16 @@ func (p *DebugProcess) removePending(sequence int64) {
 // Events returns debug adapter events.
 func (p *DebugProcess) Events() <-chan Notification {
 	return p.events
+}
+
+// Running reports whether the adapter's protocol connection is still open.
+func (p *DebugProcess) Running() bool {
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // Close terminates the debug adapter.
@@ -149,6 +169,7 @@ func (p *DebugProcess) Close() error {
 }
 
 func (p *DebugProcess) readMessages() {
+	defer close(p.done)
 	defer close(p.events)
 	for {
 		message, err := p.stream.Read()

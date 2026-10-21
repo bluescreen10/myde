@@ -8,7 +8,7 @@ import (
 )
 
 func (a *App) copy(arguments string) error {
-	selections := selectedText(a.current())
+	selections := a.clipboardSelections()
 	if len(selections) == 0 {
 		a.message = "nothing selected"
 		return nil
@@ -81,5 +81,19 @@ func selectedText(current *buffer.Buffer) []string {
 		}
 		selections = append(selections, string(current.Slice(start, end)))
 	}
+	return selections
+}
+
+func (a *App) clipboardSelections() []string {
+	selections := selectedText(a.current())
+	if view := a.currentView(); view != nil {
+		selections = nil
+		if view.focus >= 0 && view.focus < len(view.panes) {
+			if text := view.panes[view.focus].selectedText(); text != "" {
+				selections = []string{text}
+			}
+		}
+	}
+
 	return selections
 }

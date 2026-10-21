@@ -38,11 +38,25 @@ type Plugin interface {
 type Host interface {
 	Root() string
 	CurrentPath() string
+	OpenFile(path string) error
+	OpenLocation(path string, position Position) error
+	OpenDocuments() []Document
+	StartLanguageServer(mode string) error
+	RunLanguageServer(mode string, program Program) error
+	StopLanguageServer(mode string) error
+	RestartLanguageServer(mode string) error
+	StartDebugAdapter(mode string) error
+	RunDebugAdapter(mode string, configuration DebugAdapter) error
+	StopDebugAdapter(mode string) error
+	RestartDebugAdapter(mode string) error
+	LaunchDebugProgram(mode, program string) error
 	CurrentDocument() Document
 	ReplaceCurrentDocument(content []byte) error
 	Setting(name string) string
 	Subscribe(event string, handler EventHandler) error
 	RegisterCommand(name string, command Command) error
+	RegisterGlobalCommand(name string, command Command) error
+	RegisterBinding(key, command string) error
 	RegisterMode(mode Mode) error
 	RegisterStatus(name string, item StatusItem) error
 	NewView(view ui.View) ui.ViewHandle
@@ -63,12 +77,18 @@ type StatusItem struct {
 	OnRefresh       func() (string, error)
 }
 
+// Position is a zero-based source line and rune column.
+type Position struct{ Line, Column int }
+
 // Document is an immutable snapshot of the active buffer.
 type Document struct {
-	Path     string
-	Content  []byte
-	Dirty    bool
-	ReadOnly bool
+	Mode      string
+	Cursor    Position
+	Selection string
+	Path      string
+	Content   []byte
+	Dirty     bool
+	ReadOnly  bool
 }
 
 // Program describes an executable contributed by a plugin.

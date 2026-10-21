@@ -16,6 +16,11 @@ type viewRow struct {
 }
 
 type viewList struct {
+	input        *ui.TextInput
+	query        []rune
+	cursor       int
+	onInput      func(string) (ui.View, error)
+	message      string
 	rows         []viewRow
 	selected     int
 	top          int
@@ -40,6 +45,13 @@ type viewPane struct {
 	generation    uint64
 	selectedKind  string
 	selectedValue string
+	selection     *viewTextSelection
+}
+
+type viewTextSelection struct {
+	anchor   buffer.Point
+	point    buffer.Point
+	dragging bool
 }
 
 type viewPanel struct {
@@ -48,6 +60,8 @@ type viewPanel struct {
 	direction       ui.LayoutDirection
 	panes           []*viewPane
 	focus           int
+	focusSet        bool
+	beforeRefresh   func()
 	onRefresh       func() (ui.View, error)
 	refreshInterval time.Duration
 	nextRefresh     time.Time
@@ -83,6 +97,8 @@ func newViewPanel(id uint64, view ui.View) *viewPanel {
 		direction:       view.Layout.Direction,
 		onRefresh:       view.OnRefresh,
 		refreshInterval: view.RefreshInterval,
+		focusSet:        view.FocusPane != "",
+		beforeRefresh:   view.BeforeRefresh,
 	}
 	if panel.direction == "" {
 		panel.direction = ui.LayoutHorizontal
@@ -105,17 +121,28 @@ func newViewPanel(id uint64, view ui.View) *viewPanel {
 			pane.content = renderWidget(definition.Widget)
 		}
 		panel.panes = append(panel.panes, pane)
+		if pane.id == view.FocusPane {
+			panel.focus = index
+		}
 	}
 	return panel
 }
 
 func newViewList(definition ui.List) *viewList {
 	list := &viewList{
+		onInput:      definition.OnInput,
+		message:      definition.Message,
 		help:         append([]ui.KeyHelp(nil), definition.Help...),
 		previewPane:  definition.PreviewPane,
 		onAction:     definition.OnAction,
 		onSelect:     definition.OnSelect,
 		selectionSet: definition.SelectedValue != "",
+	}
+	if definition.Input != nil {
+		input := *definition.Input
+		list.input = &input
+		list.query = []rune(input.Value)
+		list.cursor = len(list.query)
 	}
 	for _, section := range definition.Sections {
 		list.rows = append(list.rows, viewRow{title: section.Title})
@@ -142,7 +169,8 @@ func renderWidget(widget ui.Widget) ui.WidgetContent {
 }
 
 func cloneWidgetContent(content ui.WidgetContent) ui.WidgetContent {
-	cloned := ui.WidgetContent{Title: content.Title, Lines: make([]ui.RichTextLine, len(content.Lines))}
+	cloned := content
+	cloned.Lines = make([]ui.RichTextLine, len(content.Lines))
 	for index, line := range content.Lines {
 		cloned.Lines[index] = line
 		cloned.Lines[index].Spans = append([]ui.RichTextSpan(nil), line.Spans...)
@@ -247,7 +275,6 @@ func (a *App) NewView(view ui.View) ui.ViewHandle {
 	a.activateBufferIndex(len(a.buffers)-1, true)
 	a.CloseSidebar()
 	a.closeFileBrowser()
-	a.closeWorkspaceSearch()
 	a.requestViewSelections(editorBuffer.view)
 	return &viewHandle{app: a, id: id}
 }
@@ -260,7 +287,6 @@ func (h *viewHandle) Show() bool {
 	h.app.activateBufferIndex(index, false)
 	h.app.CloseSidebar()
 	h.app.closeFileBrowser()
-	h.app.closeWorkspaceSearch()
 	return true
 }
 
@@ -300,7 +326,7 @@ func preserveViewState(previous, replacement *viewPanel) {
 	if previous == nil || replacement == nil {
 		return
 	}
-	if previous.focus >= 0 && previous.focus < len(previous.panes) {
+	if !replacement.focusSet && previous.focus >= 0 && previous.focus < len(previous.panes) {
 		focusedID := previous.panes[previous.focus].id
 		for index, pane := range replacement.panes {
 			if pane.id == focusedID {
@@ -315,6 +341,9 @@ func preserveViewState(previous, replacement *viewPanel) {
 			continue
 		}
 		if pane.list != nil && old.list != nil {
+			if pane.list.input != nil && old.list.input != nil && string(pane.list.query) == string(old.list.query) {
+				pane.list.cursor = old.list.cursor
+			}
 			if selected, ok := old.list.selectedItem(); ok {
 				if !pane.list.selectionSet {
 					pane.list.selectItem(selected.Kind, selected.Value)
@@ -330,6 +359,9 @@ func preserveViewState(previous, replacement *viewPanel) {
 		pane.left = old.left
 		pane.selectedKind = old.selectedKind
 		pane.selectedValue = old.selectedValue
+		if sameWidgetText(pane.content, old.content) {
+			pane.selection = old.selection
+		}
 	}
 }
 
@@ -353,7 +385,50 @@ func (a *App) handleViewEvent(event terminal.Event) error {
 	if pane.list != nil {
 		return a.handleViewListEvent(view, pane, event)
 	}
+	if event.Key == terminal.KeyEnter {
+		for _, candidate := range view.panes {
+			if candidate.list != nil && candidate.list.previewPane == pane.id && candidate.list.onAction != nil {
+				return candidate.list.perform(ui.Activate)
+			}
+		}
+	}
 	return a.handleViewWidgetEvent(pane, event)
+}
+
+// handleViewInput gives the focused list's query the same editing behavior as
+// prompts, before application shortcuts consume navigation or delete keys.
+func (a *App) handleViewInput(event terminal.Event) (bool, error) {
+	view := a.currentView()
+	if view == nil || view.focus < 0 || view.focus >= len(view.panes) {
+		return false, nil
+	}
+	list := view.panes[view.focus].list
+	if list == nil || list.input == nil {
+		return false, nil
+	}
+	handled, changed := a.editTextInput(&list.query, &list.cursor, event)
+	if !handled || !changed || list.onInput == nil {
+		return handled, nil
+	}
+	updated, err := list.onInput(string(list.query))
+	if err != nil {
+		return true, err
+	}
+	index, current := a.viewByID(view.id)
+	if index >= 0 && current == view {
+		replacement := newViewPanel(view.id, updated)
+		preserveViewState(view, replacement)
+		a.buffers[index].view = replacement
+		a.requestViewSelections(replacement)
+	}
+	return true, nil
+}
+
+func (l *viewList) contentOffset() int {
+	if l.input != nil {
+		return 2
+	}
+	return 0
 }
 
 func (a *App) handleViewListEvent(view *viewPanel, pane *viewPane, event terminal.Event) error {
@@ -375,6 +450,9 @@ func (a *App) handleViewListEvent(view *viewPanel, pane *viewPane, event termina
 	case terminal.KeyEnd:
 		list.moveToEnd(true)
 	case terminal.KeyEnter:
+		if list.onAction != nil {
+			return list.perform(ui.Activate)
+		}
 		if target := view.paneByID(list.previewPane); target != nil {
 			for index, candidate := range view.panes {
 				if candidate == target {
@@ -477,33 +555,43 @@ func (a *App) requestViewSelection(view *viewPanel, pane *viewPane) {
 		return
 	}
 	if !ok {
-		target.generation++
-		target.selectedKind = ""
-		target.selectedValue = ""
-		target.widget = nil
-		target.content = ui.WidgetContent{}
-		target.top = 0
-		target.left = 0
-		target.loading = false
-		target.err = nil
+		clearPanePreview(target)
 		return
 	}
+	load := list.onSelect
+	a.requestPanePreview(view, target, item.Kind, item.Value, func() (ui.Widget, error) { return load(item) })
+}
+
+func clearPanePreview(target *viewPane) {
 	target.generation++
-	selectionChanged := target.selectedKind != item.Kind || target.selectedValue != item.Value
-	target.selectedKind = item.Kind
-	target.selectedValue = item.Value
+	target.selectedKind = ""
+	target.selectedValue = ""
+	target.widget = nil
+	target.content = ui.WidgetContent{}
+	target.top = 0
+	target.left = 0
+	target.loading = false
+	target.err = nil
+	target.selection = nil
+}
+
+func (a *App) requestPanePreview(view *viewPanel, target *viewPane, kind, value string, load func() (ui.Widget, error)) {
+	target.generation++
+	selectionChanged := target.selectedKind != kind || target.selectedValue != value
+	target.selectedKind = kind
+	target.selectedValue = value
 	target.loading = true
 	target.err = nil
 	if selectionChanged {
+		target.selection = nil
 		target.widget = nil
 		target.content = ui.WidgetContent{}
 		target.top = 0
 		target.left = 0
 	}
 	generation := target.generation
-	load := list.onSelect
 	if a.servers == nil {
-		widget, err := load(item)
+		widget, err := load()
 		content := renderWidget(widget)
 		a.applyViewPreviewEvent(&viewPreviewEvent{
 			viewID: view.id, paneID: target.id, pane: target,
@@ -512,7 +600,7 @@ func (a *App) requestViewSelection(view *viewPanel, pane *viewPane) {
 		return
 	}
 	go func() {
-		widget, err := load(item)
+		widget, err := load()
 		content := renderWidget(widget)
 		a.servers <- serverEvent{viewPreview: &viewPreviewEvent{
 			viewID: view.id, paneID: target.id, pane: target,
@@ -535,6 +623,21 @@ func (a *App) applyViewPreviewEvent(event *viewPreviewEvent) {
 	if event.err != nil {
 		return
 	}
+	if !sameWidgetText(pane.content, event.content) {
+		pane.selection = nil
+	}
+	if pane.widget == nil || pane.content.FocusLine != event.content.FocusLine || pane.content.FocusColumn != event.content.FocusColumn {
+		rows := a.viewWidgetHeight()
+		_, height := a.screen.Size()
+		for index, bounds := range a.viewBounds(view, height-1) {
+			if view.panes[index] == pane {
+				rows = max(1, bounds.height-4)
+				pane.left = max(0, event.content.FocusColumn-max(1, bounds.width-2)/2)
+				break
+			}
+		}
+		pane.top = min(max(0, event.content.FocusLine-rows/2), max(0, len(event.content.Lines)-rows))
+	}
 	pane.widget = event.widget
 	pane.content = cloneWidgetContent(event.content)
 }
@@ -549,6 +652,9 @@ func (a *App) pollViewRefreshes() {
 		view.refreshing = true
 		view.nextRefresh = time.Now().Add(view.refreshInterval)
 		refresh := view.onRefresh
+		if view.beforeRefresh != nil {
+			view.beforeRefresh()
+		}
 		if a.servers == nil {
 			updated, err := refresh()
 			a.applyViewRefreshEvent(&viewRefreshEvent{

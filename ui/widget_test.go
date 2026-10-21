@@ -1,14 +1,17 @@
-package ui
+package ui_test
 
-import "testing"
+import (
+	"github.com/bluescreen10/myde/ui"
+	"testing"
+)
 
 var (
-	_ Widget = TextWidget{}
-	_ Widget = WidgetContent{}
+	_ ui.Widget = ui.TextWidget{}
+	_ ui.Widget = ui.WidgetContent{}
 )
 
 func TestTextWidgetProducesPlainRichText(t *testing.T) {
-	content := (TextWidget{
+	content := (ui.TextWidget{
 		Title:   "Output",
 		Content: []byte("first\r\nsecond\n"),
 	}).RenderWidget()

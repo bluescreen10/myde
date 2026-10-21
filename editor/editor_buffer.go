@@ -12,7 +12,8 @@ type editorBuffer struct {
 	diagnostics []diagnostic
 	breakpoints map[int]bool
 	mode        string
-	lspOpened   bool
+	lsp         *languageServerSession
+	lspURI      string
 	terminal    *shellBuffer
 	view        *viewPanel
 	onSave      func([]byte) error

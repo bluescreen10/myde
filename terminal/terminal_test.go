@@ -237,3 +237,21 @@ func TestScreenRestylesCellAndControlsHardwareCursor(t *testing.T) {
 		t.Fatalf("shown-cursor frame = %q", output.String())
 	}
 }
+
+func TestReaderDecodesMouseAndFollowingKey(t *testing.T) {
+	reader := terminal.NewReader(bytes.NewBufferString("\x1b[<0;8;2M\x1b[<32;12;2M\x1b[<0;12;2mx"))
+	for _, want := range []terminal.Event{
+		{Key: terminal.KeyMouse, MouseX: 7, MouseY: 1},
+		{Key: terminal.KeyMouse, MouseX: 11, MouseY: 1, MouseMotion: true},
+		{Key: terminal.KeyMouse, MouseX: 11, MouseY: 1, MouseRelease: true},
+		{Key: terminal.KeyRune, Rune: 'x'},
+	} {
+		got, err := reader.ReadEvent()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("event=%+v, want %+v", got, want)
+		}
+	}
+}

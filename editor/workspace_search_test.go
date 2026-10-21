@@ -1,77 +1,123 @@
-package editor
+package editor_test
 
 import (
-	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/bluescreen10/myde/editor"
+	searchplugin "github.com/bluescreen10/myde/plugins/search"
 	"github.com/bluescreen10/myde/terminal"
 )
 
-func TestParseRipgrepSearchResultsAndGroupRows(t *testing.T) {
-	output := []byte(
-		`{"type":"begin","data":{"path":{"text":"folder/a.go"}}}` + "\n" +
-			`{"type":"match","data":{"path":{"text":"./folder/a.go"},"lines":{"text":"alpha needle omega\n"},"line_number":7,"submatches":[{"match":{"text":"needle"},"start":6,"end":12}]}}` + "\n" +
-			`{"type":"match","data":{"path":{"text":"./folder/a.go"},"lines":{"text":"needle again\n"},"line_number":9,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}]}}` + "\n" +
-			`{"type":"match","data":{"path":{"text":"./b.txt"},"lines":{"text":"last needle\n"},"line_number":2,"submatches":[{"match":{"text":"needle"},"start":5,"end":11}]}}` + "\n",
-	)
-	results := parseRipgrepSearchResults(output)
-	if len(results) != 3 {
-		t.Fatalf("results = %+v", results)
+func TestSearchTabPreviewsLocationsAndReusesItsTab(t *testing.T) {
+	h := newHarness(t, "")
+	lines := make([]string, 90)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("context row %d", index+1)
 	}
-	if results[0].path != filepath.Join("folder", "a.go") || results[0].line != 6 ||
-		results[0].byteColumn != 6 || results[0].text != "alpha needle omega" {
-		t.Fatalf("first result = %+v", results[0])
+	lines[35], lines[70] = "needle FIRST", "needle SECOND"
+	path := filepath.Join(h.root, "source.txt")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600); err != nil {
+		t.Fatal(err)
 	}
-	panel := &workspaceSearchPanel{results: results, selected: 2}
-	rows := panel.rows()
-	if len(rows) != 5 || rows[0].path != filepath.Join("folder", "a.go") ||
-		!rows[1].match || rows[3].path != "b.txt" || rows[4].resultIndex != 2 {
-		t.Fatalf("grouped rows = %+v", rows)
+	h.exec("search.project needle")
+	h.wait("first source preview", func() bool { return strings.Contains(h.screen.row(1), "source.txt:36") && h.contains("context row 35") })
+	if h.app.CurrentPath() != "" || !h.app.CurrentDocument().ReadOnly {
+		t.Fatal("preview opened the source file for editing")
 	}
-	panel.ensureVisible(rows, 2)
-	if panel.top != 3 {
-		t.Fatalf("panel top = %d, want 3", panel.top)
+	for range 3 {
+		h.key(terminal.Event{Key: terminal.KeyRune, Rune: 'f', Control: true, Shift: true})
 	}
+	if strings.Count(h.screen.row(0), ":Search") != 1 {
+		t.Fatalf("search created duplicate tabs: %q", h.screen.row(0))
+	}
+	h.key(terminal.Event{Key: terminal.KeyDown})
+	h.wait("second source preview", func() bool { return strings.Contains(h.screen.row(1), "source.txt:71") && h.contains("context row 70") })
+	// The preview is centered on the selected match, without a line-number
+	// gutter in the text copied by mouse selection.
+	h.mouse(33, 11, 0, false, false)
+	h.mouse(39, 11, 0, true, false)
+	h.mouse(39, 11, 0, false, true)
+	if h.selection() != "needle" {
+		t.Fatalf("preview selection = %q", h.selection())
+	}
+	h.key(terminal.Event{Key: terminal.KeyEnter})
+	if h.app.CurrentPath() != path || h.app.CurrentDocument().Cursor.Line != 70 {
+		t.Fatal("Enter did not open the selected match for editing")
+	}
+	h.key(terminal.Event{Key: terminal.KeyRune, Rune: 'f', Control: true, Shift: true})
+	h.wait("restored preview", func() bool { return strings.Contains(h.screen.row(1), "source.txt:71") })
+	if strings.Count(h.screen.row(0), ":Search") != 1 {
+		t.Fatal("raising search from a source file created another tab")
+	}
+	// Clicking another result also moves the preview and returns query focus.
+	h.mouse(3, 5, 0, false, false)
+	h.mouse(3, 5, 0, false, true)
+	h.wait("clicked source preview", func() bool { return strings.Contains(h.screen.row(1), "source.txt:36") })
+	h.key(terminal.Event{Key: terminal.KeyTab})
+	h.key(terminal.Event{Key: terminal.KeyDown})
+	if !strings.Contains(h.screen.row(2), "context row 28") {
+		t.Fatalf("preview did not scroll: %q", h.screen.row(2))
+	}
+	h.key(terminal.Event{Key: terminal.KeyTab})
+	h.key(terminal.Event{Key: terminal.KeyLeft, Control: true})
+	h.text("missing ")
+	h.wait("empty results clear preview", func() bool { return h.contains("No matches") && !strings.Contains(h.screen.row(1), "source.txt:") })
 }
 
-func TestWorkspaceSearchFallbackIsRecursiveAndSmartCase(t *testing.T) {
+func TestWorkspaceSearchIsProvidedByPlugin(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("first Needle\nsecond\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "nested", "b.txt"), []byte("another needle\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "binary"), []byte{'n', 0, 'x'}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	files := []string{"a.txt", filepath.Join("nested", "b.txt"), "binary"}
-	results, err := searchWorkspaceFiles(context.Background(), root, files, "needle")
+	t.Setenv("MYDE_CONFIG", filepath.Join(root, ".myde"))
+	app, err := editor.NewWithSettings(root, nil, &testSession{100, 24}, strings.NewReader(""), io.Discard, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 || results[0].path != "a.txt" || results[1].path != filepath.Join("nested", "b.txt") {
-		t.Fatalf("case-insensitive results = %+v", results)
+	t.Cleanup(func() { _ = app.Close() })
+	if err := app.Execute("search.project"); err == nil {
+		t.Fatal("editor core registered the plugin's command")
 	}
-	results, err = searchWorkspaceFiles(context.Background(), root, files, "Needle")
-	if err != nil {
+	p := searchplugin.New()
+	if err := p.Load(app); err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || results[0].path != "a.txt" {
-		t.Fatalf("case-sensitive results = %+v", results)
+	t.Cleanup(func() { _ = p.(io.Closer).Close() })
+	if err := app.Execute("search.project"); err != nil {
+		t.Fatalf("search plugin did not register its command: %v", err)
 	}
 }
 
-func TestWorkspaceSearchKeyAndTrailingQuery(t *testing.T) {
-	if got := keyName(terminal.Event{Key: terminal.KeyRune, Rune: 'f', Control: true, Shift: true}); got != "ctrl-shift-f" {
-		t.Fatalf("key name = %q", got)
-	}
-	if got := trailingDisplayText([]rune("abcdefgh"), 4); got != "efgh" {
-		t.Fatalf("trailing query = %q", got)
+func TestWorkspaceSearchIsRecursiveAndSmartCase(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		name := "ripgrep"
+		if fallback {
+			name = "fallback"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, "")
+			if fallback {
+				t.Setenv("PATH", t.TempDir())
+			}
+			if err := os.Mkdir(filepath.Join(h.root, "nested"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for name, text := range map[string]string{"a.txt": "first Needle\n", "nested/b.txt": "another needle\n", "binary": "n\x00needle"} {
+				if err := os.WriteFile(filepath.Join(h.root, name), []byte(text), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.app.Update()
+			h.exec("search.project needle")
+			h.wait("recursive results", func() bool { return h.contains("another needle") && h.contains("first Needle") })
+			h.key(terminal.Event{Key: terminal.KeyEscape})
+			h.exec("search.project Needle")
+			h.wait("smart-case results", func() bool { return h.contains("first Needle") && !h.contains("another needle") })
+			if h.contains("binary") {
+				t.Fatal("binary was searched")
+			}
+		})
 	}
 }

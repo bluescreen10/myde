@@ -40,13 +40,7 @@ func (g *goPlugin) Load(host plugin.Host) error {
 		LanguageServer: plugin.Program{
 			Command: "gopls",
 		},
-		DebugAdapter: plugin.DebugAdapter{
-			Program: plugin.Program{
-				Command:   "dlv",
-				Arguments: []string{"dap", "--client-addr={address}"},
-			},
-			Transport: plugin.DebugReverseTCP,
-		},
+		DebugAdapter: goDebugAdapter(),
 	}); err != nil {
 		return err
 	}
@@ -55,6 +49,14 @@ func (g *goPlugin) Load(host plugin.Host) error {
 		handler plugin.Command
 	}{
 		{name: "go.fmt", handler: g.format},
+		{name: "go.debug.start", handler: g.modeCommand("go.debug.start", host.StartDebugAdapter)},
+		{name: "go.debug.stop", handler: g.modeCommand("go.debug.stop", host.StopDebugAdapter)},
+		{name: "go.debug.restart", handler: g.modeCommand("go.debug.restart", host.RestartDebugAdapter)},
+		{name: "go.debug.run", handler: g.runDebugger},
+		{name: "go.lsp.run", handler: g.runLanguageServer},
+		{name: "go.lsp.start", handler: g.modeCommand("go.lsp.start", host.StartLanguageServer)},
+		{name: "go.lsp.stop", handler: g.modeCommand("go.lsp.stop", host.StopLanguageServer)},
+		{name: "go.lsp.restart", handler: g.modeCommand("go.lsp.restart", host.RestartLanguageServer)},
 		{name: "go.vet", handler: g.vet},
 		{name: "go.build", handler: g.build},
 		{name: "go.test", handler: g.test},
@@ -198,4 +200,38 @@ func (g *goPlugin) runPackageCommand(action, arguments string) error {
 	}
 	g.host.SetMessage("go " + action + " succeeded")
 	return nil
+}
+
+func (g *goPlugin) modeCommand(name string, command func(string) error) plugin.Command {
+	return func(arguments string) error {
+		if strings.TrimSpace(arguments) != "" {
+			return fmt.Errorf("%s does not accept arguments", name)
+		}
+		return command("Go")
+	}
+}
+
+func (g *goPlugin) runLanguageServer(arguments string) error {
+	fields := strings.Fields(arguments)
+	program := plugin.Program{Command: "gopls"}
+	if len(fields) > 0 {
+		program.Command = fields[0]
+		program.Arguments = fields[1:]
+	}
+	return g.host.RunLanguageServer("Go", program)
+}
+
+func goDebugAdapter() plugin.DebugAdapter {
+	return plugin.DebugAdapter{Program: plugin.Program{Command: "dlv", Arguments: []string{"dap", "--client-addr={address}"}}, Transport: plugin.DebugReverseTCP}
+}
+
+func (g *goPlugin) runDebugger(arguments string) error {
+	if strings.TrimSpace(arguments) == "" {
+		g.host.Prompt("Go program to debug", g.runDebugger)
+		return nil
+	}
+	if err := g.host.StartDebugAdapter("Go"); err != nil {
+		return err
+	}
+	return g.host.LaunchDebugProgram("Go", arguments)
 }

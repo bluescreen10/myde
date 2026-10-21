@@ -24,13 +24,29 @@ func (a *App) CurrentPath() string {
 // CurrentDocument returns an immutable snapshot of the event buffer while
 // dispatching an event, or the active buffer otherwise.
 func (a *App) CurrentDocument() plugin.Document {
-	current := a.pluginEditorBuffer().text
-	return plugin.Document{
-		Path:     current.Path(),
-		Content:  current.Bytes(),
-		Dirty:    current.IsDirty(),
-		ReadOnly: current.IsReadOnly(),
+	editorBuffer := a.pluginEditorBuffer()
+	document := a.documentSnapshot(editorBuffer)
+	if a.eventBuffer == nil && editorBuffer.view != nil {
+		document.Selection = strings.Join(a.clipboardSelections(), "\n")
 	}
+	return document
+}
+
+func (a *App) documentSnapshot(editorBuffer *editorBuffer) plugin.Document {
+	current := editorBuffer.text
+	point := current.Cursors()[0].Point
+	return plugin.Document{Mode: a.modeForBuffer(current).Name, Cursor: plugin.Position{Line: point.Line, Column: point.Column}, Selection: strings.Join(selectedText(current), "\n"), Path: current.Path(), Content: current.Bytes(), Dirty: current.IsDirty(), ReadOnly: current.IsReadOnly()}
+}
+
+// OpenDocuments returns independent snapshots of open files on the UI loop.
+func (a *App) OpenDocuments() []plugin.Document {
+	documents := make([]plugin.Document, 0, len(a.buffers))
+	for _, editorBuffer := range a.buffers {
+		if editorBuffer.text.Path() != "" {
+			documents = append(documents, a.documentSnapshot(editorBuffer))
+		}
+	}
+	return documents
 }
 
 // ReplaceCurrentDocument replaces the event buffer while dispatching an event,
@@ -89,21 +105,30 @@ func (a *App) RegisterCommand(name string, command plugin.Command) error {
 
 // OpenSidebar displays an ephemeral plugin panel on the left.
 func (a *App) OpenSidebar(sidebar ui.Sidebar) {
+	a.cancelAction()
 	a.closeFileBrowser()
-	a.closeWorkspaceSearch()
+	a.CloseSidebar()
 	a.sidebar = newSidebarPanel(sidebar)
 	a.message = ""
 }
 
 // CloseSidebar closes the active plugin panel.
 func (a *App) CloseSidebar() {
+	panel := a.sidebar
 	a.sidebar = nil
+	if panel != nil && panel.onClose != nil {
+		state := ui.SidebarState{Input: string(panel.query), Top: panel.top}
+		if selected, ok := panel.selectedItem(); ok {
+			state.SelectedValue = selected.Value
+			state.SelectedKind = selected.Kind
+		}
+		panel.onClose(state)
+	}
 }
 
 // OpenReadOnlyBuffer opens or refreshes a named, memory-backed buffer.
 func (a *App) OpenReadOnlyBuffer(name string, content []byte) {
 	a.CloseSidebar()
-	a.closeWorkspaceSearch()
 	view := buffer.NewReadOnly(name, content)
 	for index, editorBuffer := range a.buffers {
 		current := editorBuffer.text
@@ -129,7 +154,6 @@ func (a *App) OpenTextEditor(name string, content []byte, submit func([]byte) er
 		return
 	}
 	a.CloseSidebar()
-	a.closeWorkspaceSearch()
 	for index, editorBuffer := range a.buffers {
 		if editorBuffer.onSave == nil || editorBuffer.text.Name() != name {
 			continue
@@ -159,4 +183,59 @@ func (a *App) Prompt(title string, submit func(string) error) {
 // SetMessage replaces the status-line message.
 func (a *App) SetMessage(message string) {
 	a.message = message
+}
+
+// OpenFile opens an editable file relative to the workspace root.
+func (a *App) OpenFile(path string) error {
+	if err := a.open(path); err != nil {
+		return err
+	}
+	a.CloseSidebar()
+	a.closeFileBrowser()
+	return nil
+}
+
+// RegisterGlobalCommand registers a command that can be invoked while inputs
+// and plugin views own focus. The editor cancels transient prompts before it runs.
+func (a *App) RegisterGlobalCommand(name string, command plugin.Command) error {
+	if err := a.RegisterCommand(name, command); err != nil {
+		return err
+	}
+	if a.globalCommands == nil {
+		a.globalCommands = make(map[string]bool)
+	}
+	a.globalCommands[strings.TrimSpace(name)] = true
+	return nil
+}
+
+// RegisterBinding provides a plugin shortcut. Workspace overrides take priority.
+func (a *App) RegisterBinding(key, command string) error {
+	key = normalizeKey(key)
+	command = strings.TrimSpace(command)
+	if key == "" || command == "" {
+		return fmt.Errorf("binding key and command cannot be empty")
+	}
+	if a.pluginBindings == nil {
+		a.pluginBindings = make(map[string]string)
+	}
+	a.pluginBindings[key] = command
+	if a.bindings == nil {
+		a.bindings = make(map[string]string)
+	}
+	a.bindings[key] = command
+	if override, ok := a.extensions.bindings[key]; ok {
+		a.bindings[key] = override
+	}
+	return nil
+}
+
+// OpenLocation opens a file and moves to a zero-based source position.
+func (a *App) OpenLocation(path string, position plugin.Position) error {
+	if err := a.OpenFile(path); err != nil {
+		return err
+	}
+	point := a.current().Point(a.current().Offset(buffer.Point{Line: max(0, position.Line), Column: max(0, position.Column)}))
+	a.current().SetCursors([]buffer.Cursor{{Anchor: point, Point: point}})
+	a.ensureCursorVisible()
+	return nil
 }

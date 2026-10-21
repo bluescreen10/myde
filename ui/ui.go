@@ -6,11 +6,15 @@ import (
 	"time"
 )
 
-// View is a persistent tab composed from UI panes. OnRefresh runs in the
-// background and should return self-contained data rather than call the host.
+// View is a persistent tab composed from UI panes. BeforeRefresh captures host
+// data on the UI loop; OnRefresh runs in the background and should return
+// self-contained data rather than call the host.
 type View struct {
-	Title           string
-	Layout          Layout
+	Title  string
+	Layout Layout
+	// FocusPane optionally chooses focus when a view is shown or updated.
+	FocusPane       string
+	BeforeRefresh   func()
 	RefreshInterval time.Duration
 	OnRefresh       func() (View, error)
 }
@@ -46,9 +50,13 @@ type Pane struct {
 	Widget Widget
 }
 
-// List is a selectable list widget. OnSelect is evaluated in the background
-// and places its returned widget in PreviewPane.
+// List is a selectable list widget. Input optionally adds an editable query;
+// OnInput runs on the UI loop and returns the updated view. OnSelect runs in
+// the background and places its returned widget in PreviewPane.
 type List struct {
+	Input         *TextInput
+	OnInput       func(string) (View, error)
+	Message       string
 	Sections      []ListSection
 	SelectedValue string
 	SelectedKind  string
@@ -85,6 +93,10 @@ type Widget interface {
 type WidgetContent struct {
 	Title string
 	Lines []RichTextLine
+	// FocusLine and FocusColumn identify the initial preview location, using
+	// a zero-based row and display-cell column. Refreshes preserve manual scroll.
+	FocusLine   int
+	FocusColumn int
 }
 
 // RenderWidget lets static rich-text content be used directly as a Widget.
@@ -172,8 +184,31 @@ const (
 	Remove Action = "remove"
 )
 
+// TextInput describes an editable, single-line widget.
+type TextInput struct {
+	Value       string
+	Placeholder string
+}
+
+// SidebarState is the state handed back to a sidebar's owner when hidden.
+type SidebarState struct {
+	Input         string
+	SelectedValue string
+	SelectedKind  string
+	Top           int
+}
+
 // Sidebar describes an ephemeral, keyboard-driven panel on the left.
+// BeforeRefresh runs on the UI loop to capture host data; OnRefresh runs in
+// the background and must use independent snapshots rather than call the host.
 type Sidebar struct {
+	Message         string
+	Width           int
+	Input           *TextInput
+	OnInput         func(string) (Sidebar, error)
+	OnClose         func(SidebarState)
+	Top             int
+	BeforeRefresh   func()
 	Title           string
 	Sections        []SidebarSection
 	SelectedValue   string

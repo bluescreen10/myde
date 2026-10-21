@@ -28,6 +28,7 @@ func (a *App) registerCommands() {
 		"cursor.file-start":       a.moveToFileStart,
 		"cursor.line-end":         a.moveToLineEnd,
 		"cursor.line-start":       a.moveToLineStart,
+		"cursor.goto-line":        a.gotoLine,
 		"cursor.page-down":        a.pageDown,
 		"cursor.page-up":          a.pageUp,
 		"debug.continue":          a.debugContinue,
@@ -37,6 +38,8 @@ func (a *App) registerCommands() {
 		"debug.step-in":           a.debugStepIn,
 		"debug.step-out":          a.debugStepOut,
 		"debug.start":             a.debugStart,
+		"debug.stop":              a.debugDisconnect,
+		"debug.restart":           a.debugRestart,
 		"debug.toggle-breakpoint": a.debugToggleBreakpoint,
 		"editor.quit":             a.quit,
 		"edit.cut":                a.cut,
@@ -50,8 +53,10 @@ func (a *App) registerCommands() {
 		"file.save":               a.save,
 		"lsp.definition":          a.requestLSPDefinition,
 		"lsp.start":               a.lspStart,
+		"lsp.run":                 a.lspStart,
+		"lsp.stop":                a.lspStop,
+		"lsp.restart":             a.lspRestart,
 		"search.buffer":           a.searchBuffer,
-		"search.project":          a.searchProject,
 		"shell.exec":              a.shellExec,
 		"shell.run":               a.shellRun,
 		"switch.mode":             a.switchMode,
@@ -394,22 +399,12 @@ func (a *App) saveBufferForQuit(current *buffer.Buffer, path string) error {
 }
 
 func (a *App) finishQuit() {
-	a.closeWorkspaceSearch()
 	for _, current := range a.buffers {
 		if err := a.publishEvent(plugin.EventFileClose, fileEventValue(current), current); err != nil {
 			a.message = err.Error()
 		}
-		if current.terminal != nil && current.terminal.cancel != nil {
-			current.terminal.cancel()
-		}
 	}
-	a.running = false
-	if a.lspCancel != nil {
-		a.lspCancel()
-	}
-	if a.dapCancel != nil {
-		a.dapCancel()
-	}
+	_ = a.Close()
 }
 
 func (a *App) closeBuffer(arguments string) error {
@@ -520,6 +515,7 @@ func (a *App) saveFileBuffer(current *buffer.Buffer, path string) error {
 		return err
 	}
 	if current.Path() != previousPath {
+		a.notifyLSPDidClose(current)
 		editorBuffer.mode = a.modeForPath(current.Path())
 	}
 	editorBuffer.highlighter = a.highlighterForBuffer(current)
@@ -665,7 +661,6 @@ func (a *App) switchBuffer(arguments string) error {
 func (a *App) toggleFiles(arguments string) error {
 	if !a.showFiles {
 		a.CloseSidebar()
-		a.closeWorkspaceSearch()
 		a.syncFileBrowser()
 		a.showFiles = true
 		a.browser.focused = true
@@ -820,11 +815,6 @@ func (a *App) searchBuffer(arguments string) error {
 	return nil
 }
 
-func (a *App) searchProject(arguments string) error {
-	a.openWorkspaceSearch(arguments)
-	return nil
-}
-
 func (a *App) showCompletion(arguments string) error {
 	if a.hasLanguageServerForCurrentMode() {
 		a.requestLSPCompletion()
@@ -918,4 +908,28 @@ func (a *App) showOutput(title, output string) {
 		items = append(items, paletteItem{label: line})
 	}
 	a.choose(title, items, func(item paletteItem) {})
+}
+
+func (a *App) gotoLine(arguments string) error {
+	if strings.TrimSpace(arguments) == "" {
+		a.promptMinibuffer("Go to line", func(value string) {
+			if err := a.gotoLine(value); err != nil {
+				a.message = err.Error()
+			}
+		})
+		return nil
+	}
+	line, err := strconv.Atoi(strings.TrimSpace(arguments))
+	if err != nil || line < 1 {
+		return fmt.Errorf("enter a positive line number")
+	}
+	if a.currentView() != nil {
+		return fmt.Errorf("select a text buffer first")
+	}
+	a.CloseSidebar()
+	a.closeFileBrowser()
+	point := buffer.Point{Line: min(line, a.current().LineCount()) - 1}
+	a.current().SetCursors([]buffer.Cursor{{Anchor: point, Point: point}})
+	a.ensureCursorVisible()
+	return nil
 }

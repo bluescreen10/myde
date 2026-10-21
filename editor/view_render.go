@@ -13,8 +13,8 @@ type viewPaneBounds struct {
 }
 
 func (a *App) renderView(view *viewPanel, statusRow int) {
-	width, _ := a.screen.Size()
-	bounds := layoutViewPanes(view, viewPaneBounds{left: 0, top: 1, width: width, height: statusRow - 1})
+	a.renderSidebar(statusRow)
+	bounds := a.viewBounds(view, statusRow)
 	view.focus = min(max(0, view.focus), max(0, len(view.panes)-1))
 	for index, pane := range view.panes {
 		if index >= len(bounds) {
@@ -86,6 +86,7 @@ func (a *App) renderViewPane(pane *viewPane, bounds viewPaneBounds, focused bool
 		return
 	}
 	a.renderViewWidget(pane, bounds, panelStyle, border)
+	a.renderViewSelection(pane, bounds)
 }
 
 func (a *App) renderViewList(pane *viewPane, bounds viewPaneBounds, panelStyle, border terminal.Style) {
@@ -93,12 +94,26 @@ func (a *App) renderViewList(pane *viewPane, bounds viewPaneBounds, panelStyle, 
 	accent := terminal.Style{Foreground: a.theme.Accent, Background: a.theme.Panel, Bold: true}
 	helpText := terminal.Style{Foreground: a.theme.Muted, Background: a.theme.Panel}
 	selected := terminal.Style{Foreground: a.theme.SelectionText, Background: a.theme.Selection, Bold: true}
-	contentHeight := max(0, bounds.height-4)
+	contentHeight := max(0, bounds.height-4-list.contentOffset())
+	if list.input != nil {
+		a.screen.Text(bounds.left+1, bounds.top+1, "› ", accent)
+		text, _ := inputViewport(list.query, list.cursor, bounds.width-5)
+		style := panelStyle
+		if len(list.query) == 0 {
+			text = truncate(list.input.Placeholder, bounds.width-5)
+			style = helpText
+		}
+		a.screen.Text(bounds.left+3, bounds.top+1, text, style)
+		a.drawPanelSeparator(bounds.left, bounds.top+2, bounds.width, border)
+	}
+	if len(list.rows) == 0 && list.message != "" {
+		a.screen.Text(bounds.left+2, bounds.top+1+list.contentOffset(), truncate(list.message, bounds.width-4), helpText)
+	}
 	list.ensureVisible(contentHeight)
 	for row := 0; row < contentHeight && list.top+row < len(list.rows); row++ {
 		index := list.top + row
 		entry := list.rows[index]
-		y := bounds.top + 1 + row
+		y := bounds.top + 1 + list.contentOffset() + row
 		if !entry.set {
 			style := border
 			if len(entry.title) > 0 && entry.title[0] != ' ' {
@@ -135,8 +150,12 @@ func (a *App) renderViewList(pane *viewPane, bounds viewPaneBounds, panelStyle, 
 
 	footer := bounds.top + bounds.height - 3
 	a.drawPanelSeparator(bounds.left, footer, bounds.width, border)
+	actionLabel := " preview  "
+	if list.onAction != nil {
+		actionLabel = " open  "
+	}
 	help := []styledText{
-		{text: "Enter", style: accent}, {text: " preview  ", style: helpText},
+		{text: "Enter", style: accent}, {text: actionLabel, style: helpText},
 		{text: "Tab", style: accent}, {text: " pane  ", style: helpText},
 	}
 	for _, item := range list.help {
@@ -179,7 +198,9 @@ func (a *App) renderViewWidget(pane *viewPane, bounds viewPaneBounds, panelStyle
 	help := []styledText{
 		{text: "↑↓", style: accent}, {text: " scroll  ", style: helpText},
 		{text: "←→", style: accent}, {text: " pan  ", style: helpText},
-		{text: "Tab", style: accent}, {text: " pane", style: helpText},
+		{text: "Tab", style: accent}, {text: " pane  ", style: helpText},
+		{text: "Drag", style: accent}, {text: " select  ", style: helpText},
+		{text: "C-c", style: accent}, {text: " copy", style: helpText},
 	}
 	drawStyledText(a.screen, bounds.left+2, footer+1, bounds.width-4, help)
 }

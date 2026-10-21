@@ -15,6 +15,14 @@ type sidebarRow struct {
 
 type sidebarPanel struct {
 	title           string
+	width           int
+	message         string
+	input           *ui.TextInput
+	query           []rune
+	cursor          int
+	onInput         func(string) (ui.Sidebar, error)
+	onClose         func(ui.SidebarState)
+	beforeRefresh   func()
 	rows            []sidebarRow
 	selected        int
 	top             int
@@ -29,10 +37,22 @@ type sidebarPanel struct {
 func newSidebarPanel(sidebar ui.Sidebar) *sidebarPanel {
 	panel := &sidebarPanel{
 		title:           sidebar.Title,
+		width:           sidebar.Width,
+		message:         sidebar.Message,
+		onInput:         sidebar.OnInput,
+		onClose:         sidebar.OnClose,
+		beforeRefresh:   sidebar.BeforeRefresh,
+		top:             sidebar.Top,
 		help:            append([]ui.KeyHelp(nil), sidebar.Help...),
 		onAction:        sidebar.OnAction,
 		onRefresh:       sidebar.OnRefresh,
 		refreshInterval: sidebar.RefreshInterval,
+	}
+	if sidebar.Input != nil {
+		input := *sidebar.Input
+		panel.input = &input
+		panel.query = []rune(input.Value)
+		panel.cursor = len(panel.query)
 	}
 	if panel.onRefresh != nil && panel.refreshInterval > 0 {
 		panel.nextRefresh = time.Now().Add(panel.refreshInterval)
@@ -169,4 +189,43 @@ func (p *sidebarPanel) perform(action ui.Action) error {
 		return nil
 	}
 	return p.onAction(action, row.item)
+}
+
+func (a *App) sidebarWidth(width int) int {
+	if a.sidebar != nil {
+		if a.sidebar.width > 0 {
+			return min(a.sidebar.width, max(12, width/2))
+		}
+		return fileSidebarWidth(width)
+	}
+	if a.showFiles {
+		return fileSidebarWidth(width)
+	}
+	return 0
+}
+
+func (p *sidebarPanel) contentTop() int {
+	if p.input != nil {
+		return 4
+	}
+	return 2
+}
+
+func (a *App) handleSidebarInput(event terminal.Event) (bool, error) {
+	panel := a.sidebar
+	handled, changed := a.editTextInput(&panel.query, &panel.cursor, event)
+	if !handled || !changed {
+		return handled, nil
+	}
+	if panel.onInput == nil {
+		return true, nil
+	}
+	updated, err := panel.onInput(string(panel.query))
+	if err != nil {
+		return true, err
+	}
+	replacement := newSidebarPanel(updated)
+	replacement.cursor = min(panel.cursor, len(replacement.query))
+	a.sidebar = replacement
+	return true, nil
 }

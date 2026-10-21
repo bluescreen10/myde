@@ -19,6 +19,7 @@ type paletteItem struct {
 type palette struct {
 	title              string
 	query              []rune
+	cursor             int
 	items              []paletteItem
 	filtered           []paletteItem
 	selected           int
@@ -36,6 +37,7 @@ type palette struct {
 type minibuffer struct {
 	title    string
 	query    []rune
+	cursor   int
 	onSubmit func(string)
 }
 

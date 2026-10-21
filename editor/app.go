@@ -1,7 +1,6 @@
 package editor
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/bluescreen10/myde/buffer"
 	"github.com/bluescreen10/myde/plugin"
-	"github.com/bluescreen10/myde/protocol"
 	"github.com/bluescreen10/myde/settings"
 	"github.com/bluescreen10/myde/terminal"
 	"github.com/bluescreen10/myde/ui"
@@ -40,13 +38,6 @@ type sidebarRefreshEvent struct {
 	err     error
 }
 
-type workspaceSearchEvent struct {
-	panel      *workspaceSearchPanel
-	generation uint64
-	results    []workspaceSearchResult
-	err        error
-}
-
 type statusRefreshEvent struct {
 	item *statusItem
 	text string
@@ -54,6 +45,8 @@ type statusRefreshEvent struct {
 }
 
 type serverEvent struct {
+	lspSource          *languageServerSession
+	lspStopped         *languageServerSession
 	path               string
 	diagnostics        []diagnostic
 	completions        []lspCompletion
@@ -65,42 +58,49 @@ type serverEvent struct {
 	completionDetails  *completionDetails
 	definition         *definitionTarget
 	message            string
-	debugReady         *protocol.DebugProcess
+	debugReady         *debugSession
+	debugSource        *debugSession
+	debugStopped       *debugSession
 	terminal           *shellBuffer
 	terminalOutput     string
 	terminalDone       bool
 	terminalErr        error
 	sidebarRefresh     *sidebarRefreshEvent
-	workspaceSearch    *workspaceSearchEvent
 	viewPreview        *viewPreviewEvent
 	viewRefresh        *viewRefreshEvent
 	statusRefresh      *statusRefreshEvent
 }
 
+// TerminalSession supplies dimensions for a terminal or an embedded editor host.
+// terminal.Session implements this interface.
+type TerminalSession interface {
+	Size() (width, height int, err error)
+}
+
 // App is an interactive editor session.
 type App struct {
 	root    string
-	session *terminal.Session
+	session TerminalSession
 	screen  *terminal.Screen
 	reader  *terminal.Reader
 
-	buffers         []*editorBuffer
-	active          int
-	topLine         int
-	leftColumn      int
-	tileRoot        *editorTile
-	focusedTile     *editorTile
-	historyLimit    int
-	files           []string
-	directories     []string
-	recentFiles     []string
-	recentCommands  []string
-	showFiles       bool
-	browser         *fileBrowser
-	sidebar         *sidebarPanel
-	workspaceSearch *workspaceSearchPanel
-	modes           map[string]plugin.Mode
-	extensionModes  map[string]string
+	buffers        []*editorBuffer
+	active         int
+	topLine        int
+	leftColumn     int
+	tileRoot       *editorTile
+	focusedTile    *editorTile
+	historyLimit   int
+	files          []string
+	directories    []string
+	recentFiles    []string
+	recentCommands []string
+	showFiles      bool
+	browser        *fileBrowser
+	sidebar        *sidebarPanel
+	mouseSelecting bool
+	modes          map[string]*editingMode
+	extensionModes map[string]string
 
 	theme           Theme
 	themes          map[string]Theme
@@ -108,6 +108,9 @@ type App struct {
 	settings        *settings.Store
 	extensions      *extensions
 	bindings        map[string]string
+	pluginBindings  map[string]string
+	globalCommands  map[string]bool
+	pluginClosers   []io.Closer
 	commands        map[string]plugin.Command
 	subscribers     map[string][]plugin.EventHandler
 	eventBuffer     *editorBuffer
@@ -126,23 +129,15 @@ type App struct {
 	typingBuffer    *buffer.Buffer
 	typingKind      typingGroup
 
-	lsp                  *protocol.Process
-	lspCancel            context.CancelFunc
-	lspMode              string
-	lspSync              int
-	lspCompletionResolve bool
-	dap                  *protocol.DebugProcess
-	dapCancel            context.CancelFunc
-	dapMode              string
-	servers              chan serverEvent
-	nextViewID           uint64
+	servers    chan serverEvent
+	nextViewID uint64
 }
 
 // New creates an editor rooted at root and opens paths.
 func New(
 	root string,
 	paths []string,
-	session *terminal.Session,
+	session TerminalSession,
 	input io.Reader,
 	output io.Writer,
 	installed ...plugin.Plugin,
@@ -154,7 +149,7 @@ func New(
 func NewWithSettings(
 	root string,
 	paths []string,
-	session *terminal.Session,
+	session TerminalSession,
 	input io.Reader,
 	output io.Writer,
 	store *settings.Store,
@@ -166,7 +161,7 @@ func NewWithSettings(
 func newApp(
 	root string,
 	paths []string,
-	session *terminal.Session,
+	session TerminalSession,
 	input io.Reader,
 	output io.Writer,
 	store *settings.Store,
@@ -197,7 +192,7 @@ func newApp(
 		session:        session,
 		screen:         terminal.NewScreen(output, width, height),
 		reader:         terminal.NewReader(input),
-		modes:          make(map[string]plugin.Mode),
+		modes:          make(map[string]*editingMode),
 		extensionModes: make(map[string]string),
 		historyLimit:   1000,
 		theme:          configuredTheme,
@@ -211,11 +206,20 @@ func newApp(
 		cursorBlinkOn:  true,
 		showDiagnostic: true,
 	}
+	initialized := false
+	defer func() {
+		if !initialized {
+			_ = app.Close()
+		}
+	}()
 	app.registerCommands()
 	if err := app.registerCoreModes(); err != nil {
 		return nil, err
 	}
 	for _, current := range installed {
+		if closer, ok := current.(io.Closer); ok {
+			app.pluginClosers = append(app.pluginClosers, closer)
+		}
 		if err := current.Load(app); err != nil {
 			return nil, fmt.Errorf("load plugin %s: %w", current.Name(), err)
 		}
@@ -235,11 +239,13 @@ func newApp(
 	}
 	app.reloadExtensions()
 	app.activateCurrentMode()
+	initialized = true
 	return app, nil
 }
 
 // Run processes input until the quit command is invoked.
 func (a *App) Run() error {
+	defer a.Close()
 	events := make(chan terminal.Event)
 	acknowledged := make(chan struct{})
 	errors := make(chan error, 1)
@@ -259,13 +265,13 @@ func (a *App) Run() error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for a.running {
-		if err := a.render(); err != nil {
+		if err := a.Render(); err != nil {
 			return err
 		}
 		select {
 		case event := <-events:
 			a.cursorBlinkOn = true
-			if err := a.handleEvent(event); err != nil {
+			if err := a.HandleEvent(event); err != nil {
 				a.message = err.Error()
 			}
 			acknowledged <- struct{}{}
@@ -273,7 +279,7 @@ func (a *App) Run() error {
 			a.handleServerEvent(event)
 		case <-ticker.C:
 			a.cursorBlinkOn = !a.cursorBlinkOn
-			a.pollChanges()
+			a.Update()
 		case err := <-errors:
 			return err
 		}
@@ -330,7 +336,7 @@ func (a *App) pollChanges() {
 	a.pollViewRefreshes()
 	a.pollStatusItems()
 	// Keep the workspace index current even while the file browser is hidden.
-	// The command palette and project search use the same file list.
+	// The command palette uses the current file list.
 	a.syncFileBrowser()
 	if changed, err := a.extensions.reloadIfChanged(); err != nil {
 		a.message = err.Error()
@@ -391,6 +397,9 @@ func (a *App) pollSidebarRefresh() {
 		time.Now().Before(panel.nextRefresh) {
 		return
 	}
+	if panel.beforeRefresh != nil {
+		panel.beforeRefresh()
+	}
 	panel.refreshing = true
 	panel.nextRefresh = time.Now().Add(panel.refreshInterval)
 	refresh := panel.onRefresh
@@ -415,6 +424,9 @@ func (a *App) reloadExtensions() {
 
 func (a *App) applyExtensions() {
 	a.bindings = defaultBindings()
+	for key, command := range a.pluginBindings {
+		a.bindings[key] = command
+	}
 	a.historyLimit = 1000
 	for key, command := range a.extensions.bindings {
 		a.bindings[key] = command
@@ -455,14 +467,31 @@ func (a *App) applyExtensions() {
 }
 
 func (a *App) handleServerEvent(event serverEvent) {
+	if event.lspSource != nil && event.lspSource.mode.languageServer != event.lspSource {
+		return
+	}
+	if session := event.lspStopped; session != nil {
+		if session.mode.languageServer == session {
+			a.clearLanguageServer(session.mode)
+			a.message = session.mode.Name + " language server disconnected; use lsp.start"
+		}
+		return
+	}
+	if event.debugSource != nil && event.debugSource.mode.debugger != event.debugSource {
+		return
+	}
+	if session := event.debugStopped; session != nil {
+		if session.mode.debugger == session {
+			a.clearDebugAdapter(session.mode)
+			a.message = session.mode.Name + " debug adapter disconnected"
+		}
+		return
+	}
 	if refresh := event.statusRefresh; refresh != nil {
 		refresh.item.refreshing = false
 		if refresh.err == nil {
 			refresh.item.text = strings.TrimSpace(refresh.text)
 		}
-	}
-	if search := event.workspaceSearch; search != nil {
-		a.applyWorkspaceSearchEvent(search)
 	}
 	if preview := event.viewPreview; preview != nil {
 		a.applyViewPreviewEvent(preview)
@@ -482,6 +511,9 @@ func (a *App) handleServerEvent(event serverEvent) {
 				}
 				replacement := newSidebarPanel(refresh.sidebar)
 				replacement.top = refresh.panel.top
+				if replacement.input != nil && refresh.panel.input != nil && string(replacement.query) == string(refresh.panel.query) {
+					replacement.cursor = refresh.panel.cursor
+				}
 				a.sidebar = replacement
 			}
 		}
@@ -492,23 +524,24 @@ func (a *App) handleServerEvent(event serverEvent) {
 			a.finishTerminalCommand(event.terminal, event.terminalErr)
 		}
 	}
-	if event.debugReady != nil && event.debugReady == a.dap {
+	if event.debugReady != nil && event.debugReady.mode.debugger == event.debugReady {
 		a.startDebugConfiguration(event.debugReady)
 	}
 	if event.path != "" {
 		for _, current := range a.buffers {
-			if current.text.Path() == event.path {
+			if current.text.Path() == event.path && (event.lspSource == nil || current.lsp == event.lspSource) {
 				current.diagnostics = event.diagnostics
 			}
 		}
 	}
-	if event.message != "" {
+	if event.message != "" && (event.lspSource == nil || a.currentEditorBuffer().lsp == event.lspSource) {
 		a.message = event.message
 	}
-	if event.completionDetails != nil {
+	if event.completionDetails != nil && (event.lspSource == nil || a.currentEditorBuffer().lsp == event.lspSource) {
 		a.applyCompletionDetails(*event.completionDetails)
 	}
 	if event.completionReady && event.completionBuffer == a.current() &&
+		(event.lspSource == nil || a.currentEditorBuffer().lsp == event.lspSource) &&
 		event.completionRevision == event.completionBuffer.Revision() &&
 		event.completionPoint == event.completionBuffer.Cursors()[0].Point &&
 		event.completionEpoch == a.completionEpoch && a.minibuffer == nil &&
@@ -549,7 +582,7 @@ func (a *App) handleServerEvent(event serverEvent) {
 		}
 		a.resolveSelectedCompletion()
 	}
-	if event.definition != nil {
+	if event.definition != nil && (event.lspSource == nil || a.currentEditorBuffer().lsp == event.lspSource) {
 		a.openDefinition(*event.definition)
 	}
 }
@@ -596,11 +629,14 @@ func scanWorkspace(root string) workspaceContents {
 func defaultBindings() map[string]string {
 	bindings := map[string]string{
 		"ctrl-p":         "command.palette",
+		"ctrl-g":         "cursor.goto-line",
+		"ctrl-c":         "edit.copy",
+		"ctrl-left":      "cursor.line-start",
+		"ctrl-right":     "cursor.line-end",
 		"ctrl-q":         "editor.quit",
 		"ctrl-r":         "file.rename",
 		"ctrl-shift-n":   "file.new",
 		"ctrl-space":     "completion.show",
-		"ctrl-shift-f":   "search.project",
 		"ctrl-.":         "lsp.definition",
 		"alt-b":          "view.files",
 		"alt-shift-up":   "cursor.page-up",
@@ -623,12 +659,22 @@ func (a *App) handleEvent(event terminal.Event) error {
 	if event.Key == terminal.KeyIgnored {
 		return nil
 	}
+	if event.Key == terminal.KeyMouse {
+		a.finishTypingGroup()
+		return a.handleMouseEvent(event)
+	}
+	commandName, _, _ := strings.Cut(a.bindings[keyName(event)], " ")
+	if a.globalCommands[commandName] {
+		a.finishTypingGroup()
+		a.cancelAction()
+		return a.execute(a.bindings[keyName(event)])
+	}
 	if !a.isTypingEvent(event) {
 		a.finishTypingGroup()
 	}
 	if a.palette == nil && a.minibuffer == nil && !a.prefix &&
 		!(a.showFiles && a.browser.focused) && a.sidebar == nil &&
-		a.workspaceSearch == nil && a.currentView() == nil {
+		a.currentView() == nil {
 		if shell := a.currentEditorBuffer().terminal; shell != nil {
 			handled, err := a.handleTerminalEvent(event, shell)
 			if handled || err != nil {
@@ -646,16 +692,14 @@ func (a *App) handleEvent(event terminal.Event) error {
 			a.message = ""
 			return nil
 		}
-		if a.workspaceSearch != nil {
-			a.closeWorkspaceSearch()
-			a.message = ""
-			return nil
-		}
 		if view := a.currentView(); view != nil {
+			for _, pane := range view.panes {
+				pane.selection = nil
+			}
 			view.focus = 0
 			return nil
 		}
-		if a.browser.focused {
+		if a.browser != nil && a.browser.focused {
 			a.closeFileBrowser()
 			a.message = ""
 			return nil
@@ -671,6 +715,29 @@ func (a *App) handleEvent(event terminal.Event) error {
 			return a.handleCompletionEvent(event)
 		}
 		return a.handlePaletteEvent(event)
+	}
+	if a.sidebar != nil && a.sidebar.input != nil {
+		if handled, err := a.handleSidebarInput(event); handled || err != nil {
+			return err
+		}
+	}
+	if a.sidebar == nil {
+		if handled, err := a.handleViewInput(event); handled || err != nil {
+			return err
+		}
+	}
+	if a.showFiles && a.browser != nil && a.browser.focused {
+		// Empty tree filters retain Left/Right for expanding directories and Delete for files.
+		if len(a.browser.query) > 0 || event.Key == terminal.KeyRune || event.Control || event.Super {
+			if handled, changed := a.editTextInput(&a.browser.query, &a.browser.cursor, event); handled {
+				if changed {
+					cursor := a.browser.cursor
+					a.browser.setQuery(a.browser.query)
+					a.browser.cursor = cursor
+				}
+				return nil
+			}
+		}
 	}
 	key := keyName(event)
 	if a.prefix {
@@ -709,9 +776,6 @@ func (a *App) handleEvent(event terminal.Event) error {
 	}
 	if a.sidebar != nil {
 		return a.handleSidebarEvent(event)
-	}
-	if a.workspaceSearch != nil {
-		return a.handleWorkspaceSearchEvent(event)
 	}
 	if a.currentView() != nil {
 		return a.handleViewEvent(event)
@@ -842,7 +906,7 @@ func (a *App) isTypingEvent(event terminal.Event) bool {
 	if a.prefix || a.minibuffer != nil || (a.palette != nil && !a.palette.completion) {
 		return false
 	}
-	if a.showFiles && a.browser.focused || a.sidebar != nil || a.workspaceSearch != nil || a.currentView() != nil ||
+	if a.showFiles && a.browser.focused || a.sidebar != nil || a.currentView() != nil ||
 		a.currentEditorBuffer().terminal != nil {
 		return false
 	}
@@ -1059,12 +1123,7 @@ func (a *App) ensureCursorVisible() {
 	if a.minibuffer != nil {
 		statusRow--
 	}
-	sidebarWidth := 0
-	if a.workspaceSearch != nil {
-		sidebarWidth = searchSidebarWidth(width)
-	} else if a.showFiles || a.sidebar != nil {
-		sidebarWidth = fileSidebarWidth(width)
-	}
+	sidebarWidth := a.sidebarWidth(width)
 	region := editorRegion{
 		x: sidebarWidth, y: 1, width: width - sidebarWidth, height: statusRow - 1,
 	}
@@ -1124,6 +1183,14 @@ func keyName(event terminal.Event) string {
 		name = "left"
 	case terminal.KeyRight:
 		name = "right"
+	case terminal.KeyHome:
+		name = "home"
+	case terminal.KeyEnd:
+		name = "end"
+	case terminal.KeyPageUp:
+		name = "page-up"
+	case terminal.KeyPageDown:
+		name = "page-down"
 	}
 	if event.Shift && (event.Control || event.Alt || event.Super) {
 		name = "shift-" + name
@@ -1142,15 +1209,16 @@ func keyName(event terminal.Event) string {
 
 func (a *App) handlePaletteEvent(event terminal.Event) error {
 	p := a.palette
-	switch event.Key {
-	case terminal.KeyEscape:
-		a.palette = nil
-	case terminal.KeyBackspace:
-		if len(p.query) > 0 {
-			p.query = p.query[:len(p.query)-1]
+	if handled, changed := a.editTextInput(&p.query, &p.cursor, event); handled {
+		if changed {
 			p.selected = 0
 			p.update()
 		}
+		return nil
+	}
+	switch event.Key {
+	case terminal.KeyEscape:
+		a.palette = nil
 	case terminal.KeyUp:
 		p.selected = max(0, p.selected-1)
 	case terminal.KeyDown:
@@ -1164,12 +1232,6 @@ func (a *App) handlePaletteEvent(event terminal.Event) error {
 		} else if p.onSubmit != nil {
 			a.palette = nil
 			p.onSubmit(query)
-		}
-	case terminal.KeyRune:
-		if !event.Control && !event.Alt && !event.Super && event.Rune != 0 {
-			p.query = append(p.query, event.Rune)
-			p.selected = 0
-			p.update()
 		}
 	}
 	return nil
@@ -1203,7 +1265,7 @@ func (a *App) handleCompletionEvent(event terminal.Event) error {
 	local := completion.localCompletion
 	keepPending := !local && shouldRefreshLSPCompletion(event) && a.hasLanguageServerForCurrentMode()
 	a.palette = nil
-	if err := a.handleEvent(event); err != nil {
+	if err := a.HandleEvent(event); err != nil {
 		return err
 	}
 	if local && isCompletionEdit(event) {
@@ -1233,11 +1295,10 @@ func isCompletionEdit(event terminal.Event) bool {
 
 func (a *App) handleMinibufferEvent(event terminal.Event) error {
 	prompt := a.minibuffer
+	if handled, _ := a.editTextInput(&prompt.query, &prompt.cursor, event); handled {
+		return nil
+	}
 	switch event.Key {
-	case terminal.KeyBackspace:
-		if len(prompt.query) > 0 {
-			prompt.query = prompt.query[:len(prompt.query)-1]
-		}
 	case terminal.KeyEnter:
 		query := string(prompt.query)
 		if query == "" {
@@ -1245,10 +1306,6 @@ func (a *App) handleMinibufferEvent(event terminal.Event) error {
 		}
 		a.minibuffer = nil
 		prompt.onSubmit(query)
-	case terminal.KeyRune:
-		if !event.Control && !event.Alt && !event.Super && event.Rune != 0 {
-			prompt.query = append(prompt.query, event.Rune)
-		}
 	}
 	return nil
 }

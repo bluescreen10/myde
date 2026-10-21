@@ -31,6 +31,7 @@ type fileBrowser struct {
 	expanded          map[string]bool
 	directoryVersions map[string]directoryVersion
 	query             []rune
+	cursor            int
 	entries           []fileEntry
 	selected          int
 	top               int
@@ -219,6 +220,7 @@ func (b *fileBrowser) currentEntry() (fileEntry, bool) {
 
 func (b *fileBrowser) setQuery(query []rune) {
 	b.query = query
+	b.cursor = len(query)
 	b.selected = 0
 	b.top = 0
 	b.rebuild()
@@ -519,6 +521,7 @@ func (a *App) replaceFileBrowser(contents workspaceContents, selectedPath string
 	filesChanged := !equalPaths(contents.files, a.files)
 	expanded := a.browser.expanded
 	query := append([]rune(nil), a.browser.query...)
+	cursor := a.browser.cursor
 	top := a.browser.top
 	focused := a.browser.focused
 	a.files = contents.files
@@ -533,6 +536,7 @@ func (a *App) replaceFileBrowser(contents workspaceContents, selectedPath string
 	browser.rebuild()
 	if len(query) > 0 {
 		browser.setQuery(query)
+		browser.cursor = min(cursor, len(query))
 	}
 	for index, entry := range browser.entries {
 		if filepath.Clean(entry.node.path) == filepath.Clean(selectedPath) {

@@ -3,6 +3,7 @@ package editor
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -10,6 +11,17 @@ import (
 	"github.com/bluescreen10/myde/plugin"
 	"github.com/bluescreen10/myde/syntax"
 )
+
+// editingMode owns the runtime shared by all buffers using a plugin's mode.
+type editingMode struct {
+	plugin.Mode
+	builtin        bool
+	languageServer *languageServerSession
+	serverProgram  plugin.Program
+	serverStopped  bool
+	debugger       *debugSession
+	debuggerConfig plugin.DebugAdapter
+}
 
 func (a *App) registerCoreModes() error {
 	modes := []plugin.Mode{
@@ -25,18 +37,20 @@ func (a *App) registerCoreModes() error {
 		if err := a.RegisterMode(mode); err != nil {
 			return err
 		}
+		a.modes[modeKey(mode.Name)].builtin = true
 	}
 	return nil
 }
 
-// RegisterMode adds a named editing mode and associates its file extensions.
+// RegisterMode adds a plugin mode, replacing built-in syntax-only fallbacks.
 func (a *App) RegisterMode(mode plugin.Mode) error {
 	mode.Name = strings.TrimSpace(mode.Name)
 	if mode.Name == "" {
 		return fmt.Errorf("mode name cannot be empty")
 	}
 	key := modeKey(mode.Name)
-	if _, exists := a.modes[key]; exists {
+	previous := a.modes[key]
+	if previous != nil && (!previous.builtin || previous.languageServer != nil || previous.debugger != nil) {
 		return fmt.Errorf("mode %q is already registered", mode.Name)
 	}
 	if mode.Syntax == "" {
@@ -67,7 +81,7 @@ func (a *App) RegisterMode(mode plugin.Mode) error {
 		if extension == "" {
 			return fmt.Errorf("mode %s has an empty file extension", mode.Name)
 		}
-		if existing := a.extensionModes[extension]; existing != "" {
+		if existing := a.extensionModes[extension]; existing != "" && !a.modes[existing].builtin {
 			return fmt.Errorf("extension %s is already registered by mode %s", extension, a.modes[existing].Name)
 		}
 		if seen[extension] {
@@ -76,8 +90,20 @@ func (a *App) RegisterMode(mode plugin.Mode) error {
 		seen[extension] = true
 		extensions = append(extensions, extension)
 	}
+	if previous != nil {
+		for _, extension := range previous.Extensions {
+			if a.extensionModes[extension] == key {
+				delete(a.extensionModes, extension)
+			}
+		}
+	}
+	for _, extension := range extensions {
+		if owner := a.modes[a.extensionModes[extension]]; owner != nil && owner.builtin {
+			owner.Extensions = slices.DeleteFunc(owner.Extensions, func(value string) bool { return value == extension })
+		}
+	}
 	mode.Extensions = extensions
-	a.modes[key] = mode
+	a.modes[key] = &editingMode{Mode: mode}
 	for _, extension := range extensions {
 		a.extensionModes[extension] = key
 	}
@@ -115,13 +141,19 @@ func (a *App) modeForPath(path string) string {
 func (a *App) modeForBuffer(current *buffer.Buffer) plugin.Mode {
 	editorBuffer := a.editorBufferFor(current)
 	if editorBuffer == nil {
-		return a.modes[modeKey("Plain Text")]
+		if plain := a.modes[modeKey("Plain Text")]; plain != nil {
+			return plain.Mode
+		}
+		return plugin.Mode{}
 	}
 	key := editorBuffer.mode
 	if mode, ok := a.modes[key]; ok {
-		return mode
+		return mode.Mode
 	}
-	return a.modes[modeKey("Plain Text")]
+	if plain := a.modes[modeKey("Plain Text")]; plain != nil {
+		return plain.Mode
+	}
+	return plugin.Mode{}
 }
 
 func (a *App) highlighterForBuffer(current *buffer.Buffer) *syntax.Highlighter {
@@ -167,9 +199,13 @@ func (a *App) setCurrentMode(name string) error {
 	if !ok {
 		return fmt.Errorf("unknown mode %q", name)
 	}
+	a.completionEpoch++
+	if a.palette != nil && a.palette.completion {
+		a.palette = nil
+	}
 	current := a.current()
 	editorBuffer := a.currentEditorBuffer()
-	if editorBuffer.lspOpened {
+	if editorBuffer.lsp != nil {
 		a.notifyLSPDidClose(current)
 	}
 	editorBuffer.diagnostics = nil
@@ -185,17 +221,18 @@ func (a *App) activateCurrentMode() {
 	if len(a.buffers) == 0 {
 		return
 	}
-	current := a.current()
-	key := a.currentEditorBuffer().mode
-	mode := a.modeForBuffer(current)
-	if mode.LanguageServer.Command == "" || (a.lsp != nil && a.lspMode == key) {
+	mode := a.modes[a.currentEditorBuffer().mode]
+	if mode == nil || mode.serverStopped {
 		return
 	}
-	if err := a.startLanguageServer(mode.LanguageServer, key); err != nil {
+	if mode.LanguageServer.Command == "" && mode.serverProgram.Command == "" {
+		return
+	}
+	if err := a.StartLanguageServer(mode.Name); err != nil {
 		a.message = fmt.Sprintf("%s language server: %v", mode.Name, err)
 	}
 }
 
 func (a *App) hasLanguageServerForCurrentMode() bool {
-	return a.lsp != nil && a.lspMode == a.currentEditorBuffer().mode
+	return a.languageServerForBuffer(a.current()) != nil
 }
